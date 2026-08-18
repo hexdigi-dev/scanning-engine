@@ -1,6 +1,7 @@
 import asyncio
 import os
 import sys
+from typing import Optional
 
 # Allow running this file directly (`python checks/api_checks.py`) as well as
 # as a package module (`python -m checks.api_checks`).
@@ -86,14 +87,30 @@ async def check_website_health(website_url: str) -> list[CheckResult]:
     return [performance_check, accessibility_check]
 
 
+def _extract_city_state(result: dict) -> Optional[str]:
+    city = None
+    state = None
+    for component in result.get("address_components", []):
+        types = component.get("types", [])
+        if "locality" in types:
+            city = component.get("long_name")
+        if "administrative_area_level_1" in types:
+            state = component.get("short_name")
+    if city and state:
+        return f"{city}, {state}"
+    return result.get("formatted_address")
+
+
 async def check_google_presence(
     business_name: str, website_url: str
 ) -> tuple[list[CheckResult], dict]:
     """Looks up the business via Places API (Find Place -> Place Details) and
-    returns two CheckResults plus a raw-data dict with review counts needed
-    for a later calculation (e.g. Lead Revival). Never raises - failures and
-    "not found" both produce score-0 CheckResults with an honest summary."""
-    raw_data = {"review_count": 0, "reviews_with_owner_response": 0}
+    returns two CheckResults plus a raw-data dict with review counts (needed
+    for a later calculation, e.g. Lead Revival) and a derived location (used
+    by the AI visibility check). Never raises - failures and "not found"
+    both produce score-0 CheckResults with an honest summary, and raw_data's
+    "location" stays None so callers can detect it couldn't be determined."""
+    raw_data = {"review_count": 0, "reviews_with_owner_response": 0, "location": None}
 
     not_found_checks = [
         CheckResult(
@@ -147,7 +164,7 @@ async def check_google_presence(
 
             details_params = {
                 "place_id": place_id,
-                "fields": "name,type,opening_hours,photo,rating,user_ratings_total,review",
+                "fields": "name,type,opening_hours,photo,rating,user_ratings_total,review,formatted_address,address_component",
                 "key": GOOGLE_API_KEY,
             }
             details_response = await client.get(PLACE_DETAILS_URL, params=details_params)
@@ -216,6 +233,7 @@ async def check_google_presence(
             raw_data = {
                 "review_count": review_count,
                 "reviews_with_owner_response": reviews_with_response,
+                "location": _extract_city_state(result),
             }
 
             if rating is None:

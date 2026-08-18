@@ -6,8 +6,9 @@ import httpx
 from fastapi import FastAPI, HTTPException
 
 import config
+from checks.ai_visibility import check_ai_visibility
 from checks.api_checks import check_google_presence, check_website_health
-from models import LeakEstimate, ScanRequest, ScanResponse
+from models import CheckResult, LeakEstimate, ScanRequest, ScanResponse
 
 app = FastAPI()
 
@@ -35,10 +36,28 @@ async def scan(request: ScanRequest) -> ScanResponse:
             detail=f"Website URL does not resolve: {request.website_url} ({exc})",
         )
 
-    website_checks, (presence_checks, _raw_presence_data) = await asyncio.gather(
+    # check_ai_visibility needs a location, which we derive from the Google
+    # Places lookup rather than collecting on the intake form - so it can't
+    # start until check_google_presence resolves. It still runs concurrently
+    # with check_website_health, the one check with no such dependency.
+    website_checks, (presence_checks, raw_presence_data) = await asyncio.gather(
         check_website_health(request.website_url),
         check_google_presence(request.business_name, request.website_url),
     )
+
+    location = raw_presence_data.get("location")
+    if location:
+        ai_visibility_check = await check_ai_visibility(request.business_name, request.business_type, location)
+    else:
+        ai_visibility_check = CheckResult(
+            check_name="AI Search Visibility",
+            score=0,
+            summary=(
+                "Could not determine the business's location - no matching Google Business "
+                "Profile was found, so the AI visibility check was skipped."
+            ),
+            source_type="measured",
+        )
 
     leak_estimate = LeakEstimate(
         headline_leak_monthly=0.0,
@@ -52,7 +71,7 @@ async def scan(request: ScanRequest) -> ScanResponse:
     response = ScanResponse(
         business_name=request.business_name,
         scanned_at=datetime.now(timezone.utc),
-        checks=website_checks + presence_checks,
+        checks=website_checks + presence_checks + [ai_visibility_check],
         leak_estimate=leak_estimate,
     )
 
