@@ -124,7 +124,7 @@ if __name__ == "__main__":
         website_url="https://www.ericksonsdrying.com",
         business_type="Water damage restoration & mold remediation",
         monthly_leads="25–50",
-        avg_job_value="$450",
+        avg_job_value="$4,500",
         response_time="Within an hour",
         close_rate="25–50%",
         dormant_leads="100–500",
