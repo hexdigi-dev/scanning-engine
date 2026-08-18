@@ -6,6 +6,7 @@ import httpx
 from fastapi import FastAPI, HTTPException
 
 import config
+from checks.agent_checks import check_local_ranking, check_reputation, check_social_presence
 from checks.ai_visibility import check_ai_visibility
 from checks.api_checks import check_google_presence, check_website_health
 from models import CheckResult, LeakEstimate, ScanRequest, ScanResponse
@@ -36,27 +37,38 @@ async def scan(request: ScanRequest) -> ScanResponse:
             detail=f"Website URL does not resolve: {request.website_url} ({exc})",
         )
 
-    # check_ai_visibility needs a location, which we derive from the Google
-    # Places lookup rather than collecting on the intake form - so it can't
-    # start until check_google_presence resolves. It still runs concurrently
-    # with check_website_health, the one check with no such dependency.
-    website_checks, (presence_checks, raw_presence_data) = await asyncio.gather(
+    # check_ai_visibility, check_local_ranking, and check_reputation all need
+    # a location, which we derive from the Google Places lookup rather than
+    # collecting on the intake form - so none of them can start until
+    # check_google_presence resolves. Everything with no such dependency
+    # (website health, presence itself, social presence) still runs together
+    # in the first stage.
+    website_checks, (presence_checks, raw_presence_data), social_check = await asyncio.gather(
         check_website_health(request.website_url),
         check_google_presence(request.business_name, request.website_url),
+        check_social_presence(request.business_name, request.website_url),
     )
 
     location = raw_presence_data.get("location")
     if location:
-        ai_visibility_check = await check_ai_visibility(request.business_name, request.business_type, location)
+        ai_visibility_check, local_ranking_check, reputation_check = await asyncio.gather(
+            check_ai_visibility(request.business_name, request.business_type, location),
+            check_local_ranking(request.business_name, request.business_type, location),
+            check_reputation(request.business_name, location),
+        )
     else:
+        skip_summary = (
+            "Could not determine the business's location - no matching Google Business "
+            "Profile was found, so this check was skipped."
+        )
         ai_visibility_check = CheckResult(
-            check_name="AI Search Visibility",
-            score=0,
-            summary=(
-                "Could not determine the business's location - no matching Google Business "
-                "Profile was found, so the AI visibility check was skipped."
-            ),
-            source_type="measured",
+            check_name="AI Search Visibility", score=0, summary=skip_summary, source_type="measured"
+        )
+        local_ranking_check = CheckResult(
+            check_name="Local Search Ranking", score=0, summary=skip_summary, source_type="measured"
+        )
+        reputation_check = CheckResult(
+            check_name="Online Reputation Scan", score=0, summary=skip_summary, source_type="measured"
         )
 
     leak_estimate = LeakEstimate(
@@ -71,7 +83,9 @@ async def scan(request: ScanRequest) -> ScanResponse:
     response = ScanResponse(
         business_name=request.business_name,
         scanned_at=datetime.now(timezone.utc),
-        checks=website_checks + presence_checks + [ai_visibility_check],
+        checks=website_checks
+        + presence_checks
+        + [social_check, ai_visibility_check, local_ranking_check, reputation_check],
         leak_estimate=leak_estimate,
     )
 
