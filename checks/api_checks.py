@@ -109,8 +109,15 @@ async def check_google_presence(
     for a later calculation, e.g. Lead Revival) and a derived location (used
     by the AI visibility check). Never raises - failures and "not found"
     both produce score-0 CheckResults with an honest summary, and raw_data's
-    "location" stays None so callers can detect it couldn't be determined."""
-    raw_data = {"review_count": 0, "reviews_with_owner_response": 0, "location": None}
+    "location"/"address"/"phone" stay None so callers can detect they
+    couldn't be determined."""
+    raw_data = {
+        "review_count": 0,
+        "reviews_with_owner_response": 0,
+        "location": None,
+        "address": None,
+        "phone": None,
+    }
 
     not_found_checks = [
         CheckResult(
@@ -164,7 +171,7 @@ async def check_google_presence(
 
             details_params = {
                 "place_id": place_id,
-                "fields": "name,type,opening_hours,photo,rating,user_ratings_total,review,formatted_address,address_component",
+                "fields": "name,type,opening_hours,photo,rating,user_ratings_total,review,formatted_address,address_component,formatted_phone_number",
                 "key": GOOGLE_API_KEY,
             }
             details_response = await client.get(PLACE_DETAILS_URL, params=details_params)
@@ -234,6 +241,8 @@ async def check_google_presence(
                 "review_count": review_count,
                 "reviews_with_owner_response": reviews_with_response,
                 "location": _extract_city_state(result),
+                "address": result.get("formatted_address"),
+                "phone": result.get("formatted_phone_number"),
             }
 
             if rating is None:

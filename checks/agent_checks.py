@@ -167,6 +167,86 @@ Score 0-10:
     return await _run_agent_check("Online Reputation Scan", system_prompt, user_prompt)
 
 
+async def check_nap_consistency(business_name: str, address: str, phone: str) -> CheckResult:
+    system_prompt = f"""You are auditing Name/Address/Phone (NAP) consistency for a business
+across online directories. This is one of the most failure-prone checks in this system - if
+you can't get a clear, confirmed read after a genuine search effort, say so plainly and score
+accordingly. Do not guess or assume consistency you haven't actually verified.
+
+The business's reference info, as we have it on file, is:
+Name: {business_name}
+Address: {address}
+Phone: {phone}
+
+Search the web for this business's listing on Yelp, Apple Maps, Bing Places, and Facebook.
+For each one you can find, compare the name, address, and phone number shown there against the
+reference info above. If you happen to notice the business on other directories or data
+aggregators (e.g. ZoomInfo, Yellow Pages, BBB) during your search and spot a mismatch there
+too, note that as well - an inconsistency anywhere reflects poorly on NAP consistency, not
+just on those four platforms.
+
+Score 0-10:
+- 0: Business not found on any of the four directories, OR found but shows wildly
+  inconsistent info (multiple different addresses/phone numbers across listings) with no way
+  to tell which is correct
+- 1-3: Found on only 1-2 of the four directories, and what you found shows a clear mismatch
+  (wrong phone number or address) versus the reference info
+- 4-6: Found on 2-3 directories with partial consistency - some listings match the reference,
+  others show a discrepancy (e.g. an outdated address, or a different phone number)
+- 7-8: Found on most (3-4) of the directories with mostly consistent info, at most one minor
+  discrepancy
+- 9-10: Found on all four directories with name, address, and phone consistently matching the
+  reference info
+
+If your search genuinely can't turn up enough information to judge on most of these
+platforms, don't guess a middle score out of politeness - say so plainly in the summary
+("could not confirm listings on X, Y") and let the score reflect that real uncertainty, since
+we can't confirm consistency we can't find.
+{RESPONSE_FORMAT_INSTRUCTIONS}"""
+    user_prompt = (
+        f"Search for '{business_name}' listings on Yelp, Apple Maps, Bing Places, and Facebook, "
+        f"and compare the name, address, and phone number shown on each against our reference "
+        f"info - address '{address}', phone '{phone}'."
+    )
+    return await _run_agent_check("Consistency, Everywhere", system_prompt, user_prompt)
+
+
+async def check_ad_activity(business_name: str) -> CheckResult:
+    system_prompt = f"""You are checking whether a business is currently running any paid ads.
+This is one of the most failure-prone checks in this system - Meta's Ad Library and Google's
+Ads Transparency Center are both JavaScript-heavy search tools that are hard to inspect via a
+plain web search, so a genuinely inconclusive result is common and expected. If you can't get
+a clear, confirmed read, say so plainly - do not report a false "no ads found" just because
+your search didn't surface anything, and do not report a false positive either.
+
+Try to determine whether "{business_name}" has active ads by:
+1. Searching for this business on Meta's Ad Library (facebook.com/ads/library)
+2. Searching for this business on Google's Ads Transparency Center (adstransparency.google.com)
+3. A general web search for "{business_name} ads" or "{business_name} sponsored" as a fallback
+
+Score 0-10:
+- 0: You found clear, confirmed evidence of NO active ads on both platforms (e.g. an explicit
+  "no ads found" / empty-results state for this exact business)
+- 3-5: You could NOT get a clear, confirmed read from either platform after a genuine search
+  effort - this reflects real uncertainty, not a confirmed absence of ads. Use this range
+  rather than 0 when you're actually unsure, since 0 should mean "confirmed no ads," not
+  "couldn't tell."
+- 6-7: Found some indication of ad activity (e.g. a search result referencing ads run by this
+  business) but could not fully confirm it's current/active
+- 8-9: Confirmed active ads currently running on one of the two platforms
+- 10: Confirmed active ads currently running on both platforms
+
+Be explicit in your summary about which case you're in - confirmed none, genuinely unknown,
+or confirmed active - so this doesn't get misread as a definitive finding when it isn't one.
+{RESPONSE_FORMAT_INSTRUCTIONS}"""
+    user_prompt = (
+        f"Check whether '{business_name}' has any active ads by searching Meta's Ad Library "
+        "(facebook.com/ads/library) and Google's Ads Transparency Center "
+        "(adstransparency.google.com), plus a general web search, and report what you find."
+    )
+    return await _run_agent_check("Visible Ad Activity", system_prompt, user_prompt)
+
+
 if __name__ == "__main__":
 
     async def _main():
@@ -174,11 +254,15 @@ if __name__ == "__main__":
         category = "water damage restoration"
         location = "Fort Myers, FL"
         website_url = "https://www.ericksonsdrying.com"
+        address = "12651 Metro Pkwy, Fort Myers, FL 33966, USA"
+        phone = "(239) 277-7744"
 
         results = await asyncio.gather(
             check_local_ranking(business_name, category, location),
             check_social_presence(business_name, website_url),
             check_reputation(business_name, location),
+            check_nap_consistency(business_name, address, phone),
+            check_ad_activity(business_name),
         )
         for result in results:
             print(f"{result.check_name}: {result.score}/10 [{result.source_type}]")
