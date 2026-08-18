@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-REQUIRED_ENV_VARS = ["GOOGLE_API_KEY", "ANTHROPIC_API_KEY"]
+REQUIRED_ENV_VARS = ["GOOGLE_API_KEY", "ANTHROPIC_API_KEY", "SCAN_API_KEY"]
 
 missing = [name for name in REQUIRED_ENV_VARS if not os.getenv(name)]
 if missing:
@@ -14,3 +14,4 @@ if missing:
 
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+SCAN_API_KEY = os.getenv("SCAN_API_KEY")

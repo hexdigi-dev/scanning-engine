@@ -1,9 +1,11 @@
 import asyncio
+import secrets
 import time
 from datetime import datetime, timezone
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Security
+from fastapi.security import APIKeyHeader
 
 import config
 from checks.agent_checks import (
@@ -23,9 +25,17 @@ app = FastAPI()
 
 WEBSITE_RESOLVE_TIMEOUT = 5.0
 
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
 
 async def _skipped_check(check_name: str, summary: str) -> CheckResult:
     return CheckResult(check_name=check_name, score=0, summary=summary, source_type="measured")
+
+
+def verify_api_key(api_key: str = Security(api_key_header)) -> str:
+    if not api_key or not secrets.compare_digest(api_key, config.SCAN_API_KEY):
+        raise HTTPException(status_code=401, detail="Missing or invalid API key")
+    return api_key
 
 
 @app.get("/")
@@ -33,7 +43,7 @@ def read_root():
     return {"status": "ok"}
 
 
-@app.post("/scan", response_model=ScanResponse)
+@app.post("/scan", response_model=ScanResponse, dependencies=[Depends(verify_api_key)])
 async def scan(request: ScanRequest) -> ScanResponse:
     start = time.monotonic()
     print(f"[scan] starting scan for '{request.business_name}'")
