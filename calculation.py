@@ -84,7 +84,11 @@ def calculate_leak_estimate(scan_request: ScanRequest, review_data: dict) -> Lea
         f"({scan_request.avg_job_value} → ~${avg_job_value_numeric:,.2f}). At your self-reported "
         f"response time ({scan_request.response_time}), we assume you capture "
         f"{response_time_multiplier:.0%} of the ~{baseline_customers:.1f} customers/mo you'd close "
-        "if you responded in under 5 minutes, losing the rest to competitors or lead fatigue."
+        "if you responded in under 5 minutes. Response-time research shows slower follow-up "
+        "typically loses customers to faster-responding competitors or lead fatigue, though we "
+        "can't confirm that's specifically what happened with your leads. This is exactly the kind "
+        "of leak our Speed-to-Lead bot is built to close, by responding to every new lead in under "
+        "60 seconds."
     )
 
     # --- 2. Dormant lead value (upside, not a leak) ---
@@ -97,7 +101,9 @@ def calculate_leak_estimate(scan_request: ScanRequest, review_data: dict) -> Lea
         "ESTIMATE, not measured data - assumes a stated 10% reactivation rate applied to your "
         f"self-reported dormant lead count ({scan_request.dormant_leads} → ~{dormant_leads_numeric:g}) "
         f"and close rate ({scan_request.close_rate} → ~{close_rate_numeric:.0%}), at your self-reported "
-        f"average job value ({scan_request.avg_job_value} → ~${avg_job_value_numeric:,.2f})."
+        f"average job value ({scan_request.avg_job_value} → ~${avg_job_value_numeric:,.2f}). This is "
+        "exactly the upside our Lead Revival campaign is built to capture, by reaching back out to "
+        "these dormant leads on your behalf."
     )
 
     # --- 3. Sanity check ---
