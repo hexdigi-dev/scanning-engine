@@ -15,7 +15,9 @@ from checks.agent_checks import (
 )
 from checks.ai_visibility import check_ai_visibility
 from checks.api_checks import check_google_presence, check_website_health
-from models import CheckResult, LeakEstimate, ScanRequest, ScanResponse
+from calculation import calculate_leak_estimate
+from models import CheckResult, ScanRequest, ScanResponse
+from synthesis import synthesize_report
 
 app = FastAPI()
 
@@ -104,28 +106,27 @@ async def scan(request: ScanRequest) -> ScanResponse:
         or _skipped_check("Consistency, Everywhere", nap_skip_summary),
     )
 
-    leak_estimate = LeakEstimate(
-        headline_leak_monthly=0.0,
-        headline_explanation="Not yet calculated - pending calculation.py wiring.",
-        supporting_leaks=[],
-        dormant_lead_value=0.0,
-        dormant_lead_explanation="Not yet calculated - pending calculation.py wiring.",
-        flagged_for_review=False,
-    )
+    all_checks = website_checks + presence_checks + [
+        social_check,
+        ad_activity_check,
+        ai_visibility_check,
+        local_ranking_check,
+        reputation_check,
+        nap_consistency_check,
+    ]
+
+    leak_estimate = calculate_leak_estimate(request, raw_presence_data)
+
+    synthesis_result = await synthesize_report(request.business_name, all_checks, leak_estimate)
+    if synthesis_result.review_note:
+        print(f"[scan] REVIEW NEEDED for '{request.business_name}': {synthesis_result.review_note}")
+
+    leak_estimate = leak_estimate.model_copy(update={"headline_explanation": synthesis_result.leak_narrative})
 
     response = ScanResponse(
         business_name=request.business_name,
         scanned_at=datetime.now(timezone.utc),
-        checks=website_checks
-        + presence_checks
-        + [
-            social_check,
-            ad_activity_check,
-            ai_visibility_check,
-            local_ranking_check,
-            reputation_check,
-            nap_consistency_check,
-        ],
+        checks=synthesis_result.checks,
         leak_estimate=leak_estimate,
     )
 
