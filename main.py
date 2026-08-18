@@ -42,9 +42,10 @@ async def scan(request: ScanRequest) -> ScanResponse:
 
     leak_estimate = LeakEstimate(
         headline_leak_monthly=0.0,
-        headline_explanation="Not yet calculated - pending calculation.py implementation.",
+        headline_explanation="Not yet calculated - pending calculation.py wiring.",
         supporting_leaks=[],
         dormant_lead_value=0.0,
+        dormant_lead_explanation="Not yet calculated - pending calculation.py wiring.",
         flagged_for_review=False,
     )
 

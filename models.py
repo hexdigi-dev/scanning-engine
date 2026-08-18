@@ -55,6 +55,7 @@ class LeakEstimate(BaseModel):
     headline_explanation: str
     supporting_leaks: List[SupportingLeak]
     dormant_lead_value: float
+    dormant_lead_explanation: str
     flagged_for_review: bool
 
 
