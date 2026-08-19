@@ -22,10 +22,12 @@ PAGESPEED_TIMEOUT = 90.0  # Lighthouse audits (esp. with 2 categories) can run w
 
 async def _fetch_pagespeed_category(
     website_url: str, category: str, check_name: str, label: str
-) -> CheckResult:
+) -> tuple[CheckResult, dict]:
     """Runs a single-category PageSpeed Insights audit and returns one
-    CheckResult scaled from the API's 0-100 score to 0-10. Never raises -
-    any failure produces a score-0 CheckResult instead."""
+    CheckResult scaled from the API's 0-100 score to 0-10, plus a raw-data
+    dict (only populated for the "performance" category, which is where
+    Lighthouse's Largest Contentful Paint audit lives). Never raises - any
+    failure produces a score-0 CheckResult and an empty raw-data dict."""
     params = {
         "url": website_url,
         "key": GOOGLE_API_KEY,
@@ -39,30 +41,49 @@ async def _fetch_pagespeed_category(
 
         if response.status_code != 200:
             reason = response.json().get("error", {}).get("message", response.text[:200])
-            return CheckResult(
-                check_name=check_name,
-                score=0,
-                summary=f"PageSpeed Insights request failed (HTTP {response.status_code}): {reason}",
-                source_type="measured",
+            return (
+                CheckResult(
+                    check_name=check_name,
+                    score=0,
+                    summary=f"PageSpeed Insights request failed (HTTP {response.status_code}): {reason}",
+                    source_type="measured",
+                ),
+                {},
             )
 
         data = response.json()
         score_raw = data.get("lighthouseResult", {}).get("categories", {}).get(category, {}).get("score")
 
         if score_raw is None:
-            return CheckResult(
-                check_name=check_name,
-                score=0,
-                summary=f"PageSpeed Insights did not return a {label} score for this URL.",
-                source_type="measured",
+            return (
+                CheckResult(
+                    check_name=check_name,
+                    score=0,
+                    summary=f"PageSpeed Insights did not return a {label} score for this URL.",
+                    source_type="measured",
+                ),
+                {},
             )
 
+        raw_extra = {}
+        if category == "performance":
+            lcp_ms = (
+                data.get("lighthouseResult", {})
+                .get("audits", {})
+                .get("largest-contentful-paint", {})
+                .get("numericValue")
+            )
+            raw_extra["lcp_seconds"] = round(lcp_ms / 1000, 2) if lcp_ms is not None else None
+
         score_100 = round(score_raw * 100)
-        return CheckResult(
-            check_name=check_name,
-            score=round(score_100 / 10),
-            summary=f"PageSpeed {label} score: {score_100}/100 (mobile).",
-            source_type="measured",
+        return (
+            CheckResult(
+                check_name=check_name,
+                score=round(score_100 / 10),
+                summary=f"PageSpeed {label} score: {score_100}/100 (mobile).",
+                source_type="measured",
+            ),
+            raw_extra,
         )
 
     except Exception as exc:
@@ -71,20 +92,22 @@ async def _fetch_pagespeed_category(
             if str(exc)
             else f"{check_name} check failed: {type(exc).__name__}"
         )
-        return CheckResult(check_name=check_name, score=0, summary=summary, source_type="measured")
+        return CheckResult(check_name=check_name, score=0, summary=summary, source_type="measured"), {}
 
 
-async def check_website_health(website_url: str) -> list[CheckResult]:
+async def check_website_health(website_url: str) -> tuple[list[CheckResult], dict]:
     """Runs Google PageSpeed Insights performance and accessibility audits
     as two concurrent single-category requests (smaller audits, run in
     parallel via asyncio.gather rather than one combined call run twice as
     slow, or sequentially) and returns two CheckResults, each scaled from
-    the API's 0-100 score to 0-10."""
-    performance_check, accessibility_check = await asyncio.gather(
+    the API's 0-100 score to 0-10, plus a raw-data dict with "lcp_seconds"
+    (None if it couldn't be measured) for the website speed leak calc."""
+    (performance_check, performance_raw), (accessibility_check, _) = await asyncio.gather(
         _fetch_pagespeed_category(website_url, "performance", "Website Health", "performance"),
         _fetch_pagespeed_category(website_url, "accessibility", "Accessibility Basics", "accessibility"),
     )
-    return [performance_check, accessibility_check]
+    raw_data = {"lcp_seconds": performance_raw.get("lcp_seconds")}
+    return [performance_check, accessibility_check], raw_data
 
 
 def _extract_city_state(result: dict) -> Optional[str]:
@@ -280,9 +303,10 @@ if __name__ == "__main__":
         website_url = "https://bluebottlecoffee.com"
 
         print(f"Checking website health for {website_url}...")
-        health_checks = await check_website_health(website_url)
+        health_checks, health_raw_data = await check_website_health(website_url)
         for check in health_checks:
             print(f"  {check.check_name}: {check.score}/10 [{check.source_type}] - {check.summary}")
+        print(f"  Raw data: {health_raw_data}")
 
         print(f"\nChecking Google presence for '{business_name}'...")
         presence_checks, raw_data = await check_google_presence(business_name, website_url)

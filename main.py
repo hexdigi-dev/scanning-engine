@@ -65,7 +65,12 @@ async def scan(request: ScanRequest) -> ScanResponse:
     # form - so none of them can start until check_google_presence resolves.
     # Everything with no such dependency (website health, presence itself,
     # social presence, ad activity) still runs together in the first stage.
-    website_checks, (presence_checks, raw_presence_data), social_check, ad_activity_check = await asyncio.gather(
+    (
+        (website_checks, raw_website_data),
+        (presence_checks, raw_presence_data),
+        social_check,
+        ad_activity_check,
+    ) = await asyncio.gather(
         check_website_health(request.website_url),
         check_google_presence(request.business_name, request.website_url),
         check_social_presence(request.business_name, request.website_url),
@@ -125,7 +130,14 @@ async def scan(request: ScanRequest) -> ScanResponse:
         nap_consistency_check,
     ]
 
-    leak_estimate = calculate_leak_estimate(request, raw_presence_data)
+    leak_estimate = calculate_leak_estimate(
+        request,
+        raw_presence_data,
+        ai_visibility_score=ai_visibility_check.score,
+        local_ranking_score=local_ranking_check.score,
+        reputation_score=reputation_check.score,
+        lcp_seconds=raw_website_data.get("lcp_seconds"),
+    )
 
     synthesis_result = await synthesize_report(request.business_name, all_checks, leak_estimate)
     if synthesis_result.review_note:

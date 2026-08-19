@@ -238,7 +238,14 @@ if __name__ == "__main__":
             close_rate="25–50%",
             dormant_leads="100–500",
         )
-        leak_estimate = calculate_leak_estimate(test_request, {"review_count": 22, "reviews_with_owner_response": 0})
+        leak_estimate = calculate_leak_estimate(
+            test_request,
+            {"review_count": 22, "reviews_with_owner_response": 0},
+            ai_visibility_score=0,
+            local_ranking_score=1,
+            reputation_score=4,
+            lcp_seconds=4.2,
+        )
 
         sample_checks = [
             CheckResult(
