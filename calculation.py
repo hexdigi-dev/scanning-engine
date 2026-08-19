@@ -45,8 +45,14 @@ RESPONSE_TIME_MULTIPLIERS = {
 # dormant leads could realistically be won back via a reactivation campaign.
 DORMANT_REACTIVATION_RATE = 0.10
 
-# Rough plausibility ceiling multiplier for the sanity check.
-PLAUSIBILITY_CEILING_MULTIPLIER = 3.0
+# Rough plausibility ceiling multiplier for the sanity check. The combined
+# headline + supporting-leaks total is structurally bounded at ~1.2x
+# implied_monthly_revenue by the underlying formulas (headline_leak_monthly
+# alone maxes out at 0.85x, at the slowest response-time tier), so 1.0x sits
+# comfortably above what real businesses produce while still being
+# reachable by genuinely extreme combinations - unlike the old 3.0x, which
+# the combined total could never mathematically reach.
+PLAUSIBILITY_CEILING_MULTIPLIER = 1.0
 
 # Visibility gap: only worth calculating when the two AI-agent search checks
 # average out to genuinely poor visibility (below this out of 10).
