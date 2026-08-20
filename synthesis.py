@@ -53,6 +53,26 @@ fact - direct, declarative language, no hedging. Anything that comes from an est
 time it's mentioned - phrasing like "based on what you told us" or "an estimated $X" - and must
 never be stated as a confirmed fact.
 
+REPUTATION GAP RULE, applies whenever supporting_leaks includes an entry labeled "Reputation
+Gap" - this is a general rule for any business, not a one-off for whichever business happens to
+be scanned:
+- Pull the negative-signal specifics (complaints, bad reviews, low platform ratings) from the
+  Online Reputation Scan check's summary, but describe them at a CATEGORY level, not verbatim -
+  e.g. "an unresolved complaint" or "a negative review about a specific service area," never the
+  exact complaint wording or a review quote. This matches how the rest of the report avoids
+  overclaiming precision.
+- Add a remedy tie-in, the same way headline_leak_monthly ties to the Speed-to-Lead bot and
+  dormant_lead_value ties to Lead Revival:
+  - If negative reviews appear on standard review platforms (Google, Yelp, Facebook, BBB's
+    review section, Yellow Pages, etc.), mention that the review response service can help
+    address those directly.
+  - If a FORMAL BBB COMPLAINT exists - distinct from a BBB review, a separate formal process -
+    explicitly call out that distinction: it requires a direct, personalized response from the
+    business through BBB's own portal within a 14-day window, and can't be automated. Offer to
+    help think through that response, but don't claim the bot can handle it.
+- If neither negative reviews nor a formal complaint show up in the check data, skip the remedy
+  tie-in rather than inventing one.
+
 Respond with ONLY a JSON object, no markdown code fences, no commentary before or after, in
 exactly this shape:
 {{
@@ -116,6 +136,11 @@ Tasks:
 3. supporting_leaks currently has {len(supporting_leaks_payload)} entries. If there are any,
    weave every single one into leak_narrative. Treat this as a variable-length list in general -
    more entries may be added in a later step, and all of them need to show up, not just some.
+   If one of them is labeled "Reputation Gap," follow the REPUTATION GAP RULE from the system
+   prompt - pull specifics from the Online Reputation Scan check's summary above (if present
+   among the check results), describe them at a category level, and add the appropriate remedy
+   tie-in (review response service, and/or the BBB-complaint-specific caveat if a formal
+   complaint is present).
 4. End leak_narrative with one closing line connecting dormant_lead_value (also framed as an
    estimate) to our Lead Revival campaign, preserving that connection from
    dormant_lead_explanation above.
@@ -264,6 +289,20 @@ if __name__ == "__main__":
                 check_name="AI Search Visibility",
                 score=0,
                 summary="Mentioned by 0 of 4 AI assistants. Not mentioned by: Claude, ChatGPT, Grok, Gemini.",
+                source_type="measured",
+            ),
+            CheckResult(
+                check_name="Online Reputation Scan",
+                score=4,
+                summary=(
+                    "On Birdeye, Erickson's Drying Systems has a 4.1 star rating with 38 reviews, and "
+                    "has a Facebook presence with 1,967 likes, but has a much weaker showing "
+                    "elsewhere: BBB shows the business as Not BBB Accredited, with a formal BBB "
+                    "complaint on file alleging misleading practices around a reconstruction job that "
+                    "remains unresolved, Yelp's page has one negative review specifically calling out "
+                    "poor reconstruction workmanship, and Trustpilot shows only a 2.8 average "
+                    "TrustScore out of 5 with 3 reviews."
+                ),
                 source_type="measured",
             ),
         ]
