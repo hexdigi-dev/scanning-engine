@@ -30,6 +30,52 @@ VOICE_EXAMPLES = [
 ]
 
 
+SUBMIT_TOOL = {
+    "name": "submit_report",
+    "description": "Submit the rewritten check summaries and leak explanations.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "checks": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "check_name": {"type": "string"},
+                        "summary": {"type": "string"},
+                    },
+                    "required": ["check_name", "summary"],
+                },
+            },
+            "leak_text": {
+                "type": "object",
+                "properties": {
+                    "headline_explanation": {"type": "string"},
+                    "supporting_leaks": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "label": {"type": "string"},
+                                "explanation": {"type": "string"},
+                            },
+                            "required": ["label", "explanation"],
+                        },
+                    },
+                    "dormant_lead_explanation": {"type": "string"},
+                },
+                "required": ["headline_explanation", "supporting_leaks", "dormant_lead_explanation"],
+            },
+            "review_note": {
+                "type": ["string", "null"],
+                "description": "Internal-only note, or null.",
+            },
+        },
+        "required": ["checks", "leak_text", "review_note"],
+    },
+}
+
+
 @dataclass
 class SynthesisResult:
     checks: List[CheckResult]
@@ -51,7 +97,9 @@ VOICE: direct, plain-language, no jargon. Write as "we" (the agency) - never fir
 singular ("I"). Explain any technical measurement in terms a business owner understands (e.g.
 say how long the page takes to load rather than naming a metric like LCP). Never use internal
 labels or all-caps tags such as "ESTIMATE, not measured data" or "UPSIDE/OPPORTUNITY" - convey
-the same meaning in a normal sentence. For tone calibration only (these describe specific
+the same meaning in a normal sentence. Never copy raw error messages, status codes, or
+code-like text into a summary - if something couldn't be checked, say so plainly (e.g. "one
+assistant was temporarily unavailable, so we couldn't check it"). For tone calibration only (these describe specific
 checks from our site copy - don't force a line onto a check it doesn't actually describe),
 here's the voice we write in:
 {voice_block}
@@ -82,19 +130,9 @@ be scanned:
 - If neither negative reviews nor a formal complaint show up in the check data, skip the remedy
   tie-in rather than inventing one.
 
-Respond with ONLY a JSON object, no markdown code fences, no commentary before or after, in
-exactly this shape:
-{{
-  "checks": [{{"check_name": "<copied exactly from input>", "summary": "<rewritten summary>"}}],
-  "leak_text": {{
-    "headline_explanation": "<rewritten headline explanation>",
-    "supporting_leaks": [{{"label": "<copied exactly from input>", "explanation": "<rewritten explanation>"}}],
-    "dormant_lead_explanation": "<rewritten dormant lead explanation>"
-  }},
-  "review_note": "<string, or null>"
-}}
-The "checks" array must contain exactly one entry per input check, in the same order, with
-check_name copied exactly as given - only the summary text changes. Likewise
+Submit your finished work by calling the submit_report tool - that is the only output that
+gets used. The "checks" list must contain exactly one entry per input check, in the same order,
+with check_name copied exactly as given - only the summary text changes. Likewise
 "leak_text.supporting_leaks" must contain exactly one entry per input supporting leak, with the
 label copied exactly as given."""
 
@@ -178,6 +216,21 @@ def _extract_json(text: str) -> dict:
     raise ValueError("No JSON object found in response")
 
 
+def _parse_response(data: dict) -> dict:
+    """Prefers the submit_report tool call, whose input the API has already
+    parsed into valid JSON. Falls back to reading JSON out of plain text in
+    case the model ever answers without calling the tool."""
+    for block in data.get("content", []):
+        if block.get("type") == "tool_use" and block.get("name") == SUBMIT_TOOL["name"]:
+            tool_input = block.get("input")
+            if isinstance(tool_input, dict):
+                return tool_input
+    full_text = "\n".join(
+        block.get("text", "") for block in data.get("content", []) if block.get("type") == "text"
+    )
+    return _extract_json(full_text)
+
+
 def _fallback_result(
     all_check_results: List[CheckResult], leak_estimate: LeakEstimate, reason: str
 ) -> SynthesisResult:
@@ -219,6 +272,8 @@ async def synthesize_report(
                     "model": ANTHROPIC_MODEL,
                     "max_tokens": 4000,
                     "system": _build_system_prompt(),
+                    "tools": [SUBMIT_TOOL],
+                    "tool_choice": {"type": "tool", "name": SUBMIT_TOOL["name"]},
                     "messages": [
                         {
                             "role": "user",
@@ -234,10 +289,7 @@ async def synthesize_report(
             )
 
         data = response.json()
-        full_text = "\n".join(
-            block.get("text", "") for block in data.get("content", []) if block.get("type") == "text"
-        )
-        parsed = _extract_json(full_text)
+        parsed = _parse_response(data)
 
         polished_by_name = {
             item["check_name"]: item["summary"] for item in parsed.get("checks", []) if "check_name" in item

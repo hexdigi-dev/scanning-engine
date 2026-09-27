@@ -131,6 +131,35 @@ async def _call_gemini(prompt: str) -> ProviderResult:
         return ProviderResult("Gemini", False, "", f"{type(exc).__name__}: {exc}")
 
 
+# Status codes that usually mean "busy, try again shortly" rather than a real
+# problem with our request.
+RETRYABLE_STATUS = re.compile(r"^HTTP (429|500|502|503|504|529)\b")
+RETRY_DELAY_SECONDS = 3.0
+
+
+async def _call_with_retry(call, prompt: str) -> ProviderResult:
+    """One quick retry when a provider says it's overloaded. Timeouts are not
+    retried - they already took AI_CALL_TIMEOUT seconds."""
+    result = await call(prompt)
+    if not result.success and RETRYABLE_STATUS.match(result.error or ""):
+        await asyncio.sleep(RETRY_DELAY_SECONDS)
+        result = await call(prompt)
+    return result
+
+
+def _plain_failure_reason(error: Optional[str]) -> str:
+    """Turns a raw provider error into wording that's safe to show a client.
+    The raw error still goes to the logs."""
+    error = error or ""
+    if RETRYABLE_STATUS.match(error):
+        return "temporarily unavailable"
+    if "not set" in error:
+        return "not configured"
+    if "Timeout" in error:
+        return "didn't respond in time"
+    return "returned an error"
+
+
 def _business_mentioned(text: str, business_name: str) -> bool:
     if not text:
         return False
@@ -155,16 +184,17 @@ async def check_ai_visibility(business_name: str, category: str, location: str) 
     prompt = f"What are the best {category} options near {location}? List a few real business names."
 
     results = await asyncio.gather(
-        _call_claude(prompt),
-        _call_openai(prompt),
-        _call_xai(prompt),
-        _call_gemini(prompt),
+        _call_with_retry(_call_claude, prompt),
+        _call_with_retry(_call_openai, prompt),
+        _call_with_retry(_call_xai, prompt),
+        _call_with_retry(_call_gemini, prompt),
     )
 
     mentioned, not_mentioned, failed = [], [], []
     for result in results:
         if not result.success:
-            failed.append(f"{result.provider} (check failed: {result.error})")
+            print(f"[ai_visibility] {result.provider} check failed: {result.error}")
+            failed.append(f"{result.provider} ({_plain_failure_reason(result.error)})")
         elif _business_mentioned(result.text, business_name):
             mentioned.append(result.provider)
         else:
@@ -172,7 +202,11 @@ async def check_ai_visibility(business_name: str, category: str, location: str) 
 
     score = SCORE_BY_MENTION_COUNT[len(mentioned)]
 
-    summary = f"Mentioned by {len(mentioned)} of 4 AI assistants"
+    checked = len(mentioned) + len(not_mentioned)
+    if failed:
+        summary = f"Mentioned by {len(mentioned)} of the {checked} AI assistants we could check"
+    else:
+        summary = f"Mentioned by {len(mentioned)} of 4 AI assistants"
     summary += f" ({', '.join(mentioned)})." if mentioned else "."
     if not_mentioned:
         summary += f" Not mentioned by: {', '.join(not_mentioned)}."
