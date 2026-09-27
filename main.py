@@ -1,13 +1,20 @@
 import asyncio
 import secrets
 import time
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from pathlib import Path
 
 import httpx
-from fastapi import Depends, FastAPI, HTTPException, Security
+from fastapi import Depends, FastAPI, HTTPException, Request, Security
+from fastapi.responses import HTMLResponse
 from fastapi.security import APIKeyHeader
+from fastapi.staticfiles import StaticFiles
+from pydantic import ValidationError
 
 import config
+import pages
+import storage
 from checks.agent_checks import (
     check_ad_activity,
     check_local_ranking,
@@ -21,7 +28,15 @@ from calculation import calculate_leak_estimate
 from models import CheckResult, ScanRequest, ScanResponse
 from synthesis import synthesize_report
 
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await storage.init()
+    yield
+    await storage.close()
+
+
+app = FastAPI(lifespan=lifespan)
+app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), name="static")
 
 WEBSITE_RESOLVE_TIMEOUT = 5.0
 
@@ -38,13 +53,85 @@ def verify_api_key(api_key: str = Security(api_key_header)) -> str:
     return api_key
 
 
-@app.get("/")
-def read_root():
+@app.get("/health")
+def health():
     return {"status": "ok"}
 
 
+def _public_base_url(http_request: Request) -> str:
+    if config.PUBLIC_BASE_URL:
+        return config.PUBLIC_BASE_URL.rstrip("/")
+    if config.RAILWAY_PUBLIC_DOMAIN:
+        return f"https://{config.RAILWAY_PUBLIC_DOMAIN}"
+    return str(http_request.base_url).rstrip("/")
+
+
+# --- Public pages -----------------------------------------------------------
+
+@app.get("/", response_class=HTMLResponse)
+async def landing_page(http_request: Request):
+    return pages.render_landing(http_request)
+
+
+@app.post("/start", response_class=HTMLResponse)
+async def start_scan(http_request: Request):
+    """Receives the landing-page form, validates it, and forwards it to the
+    Make.com webhook - Make then calls /scan and sends the emails, exactly
+    as before. The visitor sees a "your scan is running" page."""
+    form = await http_request.form()
+    values = {key: str(value).strip() for key, value in form.items()}
+
+    # Honeypot: real people never see or fill this field; bots usually do.
+    if values.pop("company_fax", ""):
+        return pages.render_submitted(http_request, email="")
+
+    website = values.get("website_url", "")
+    if website and not website.lower().startswith(("http://", "https://")):
+        values["website_url"] = f"https://{website}"
+
+    try:
+        scan_request = ScanRequest(**values)
+    except ValidationError as exc:
+        return pages.render_landing(http_request, values=values, errors=pages.form_errors(exc), status_code=422)
+
+    if not config.MAKE_WEBHOOK_URL:
+        print("[start] MAKE_WEBHOOK_URL is not set - cannot forward form submission")
+        return pages.render_landing(
+            http_request,
+            values=values,
+            errors={"_form": "Scans can't be started right now. Please try again later."},
+            status_code=503,
+        )
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.post(config.MAKE_WEBHOOK_URL, json=scan_request.model_dump())
+        response.raise_for_status()
+    except httpx.HTTPError as exc:
+        print(f"[start] failed to forward '{scan_request.business_name}' to Make: {exc}")
+        return pages.render_landing(
+            http_request,
+            values=values,
+            errors={"_form": "We couldn't start your scan. Please try again in a minute."},
+            status_code=502,
+        )
+
+    print(f"[start] forwarded scan request for '{scan_request.business_name}' to Make")
+    return pages.render_submitted(http_request, email=scan_request.email)
+
+
+@app.get("/report/{report_id}", response_class=HTMLResponse)
+async def report_page(report_id: str, http_request: Request):
+    data = await storage.get_report(report_id)
+    if data is None:
+        return pages.render_not_found(http_request)
+    return pages.render_report(http_request, ScanResponse.model_validate(data))
+
+
+# --- Scan API (called by Make) ----------------------------------------------
+
 @app.post("/scan", response_model=ScanResponse, dependencies=[Depends(verify_api_key)])
-async def scan(request: ScanRequest) -> ScanResponse:
+async def scan(request: ScanRequest, http_request: Request) -> ScanResponse:
     start = time.monotonic()
     print(f"[scan] starting scan for '{request.business_name}'")
 
@@ -143,7 +230,13 @@ async def scan(request: ScanRequest) -> ScanResponse:
     if synthesis_result.review_note:
         print(f"[scan] REVIEW NEEDED for '{request.business_name}': {synthesis_result.review_note}")
 
-    leak_estimate = leak_estimate.model_copy(update={"headline_explanation": synthesis_result.leak_narrative})
+    leak_estimate = leak_estimate.model_copy(
+        update={
+            "headline_explanation": synthesis_result.headline_explanation,
+            "supporting_leaks": synthesis_result.supporting_leaks,
+            "dormant_lead_explanation": synthesis_result.dormant_lead_explanation,
+        }
+    )
 
     response = ScanResponse(
         business_name=request.business_name,
@@ -151,6 +244,18 @@ async def scan(request: ScanRequest) -> ScanResponse:
         checks=synthesis_result.checks,
         leak_estimate=leak_estimate,
     )
+
+    # Save the finished scan so it can be viewed at /report/<id>. A storage
+    # failure never fails the scan itself - the emails still go out, just
+    # without a report link.
+    report_id = storage.new_report_id()
+    try:
+        await storage.save_report(report_id, request.business_name, response.model_dump(mode="json"))
+        response = response.model_copy(
+            update={"report_id": report_id, "report_url": f"{_public_base_url(http_request)}/report/{report_id}"}
+        )
+    except Exception as exc:
+        print(f"[scan] could not save report for '{request.business_name}': {type(exc).__name__}: {exc}")
 
     elapsed = time.monotonic() - start
     print(f"[scan] finished scan for '{request.business_name}' in {elapsed:.2f}s")

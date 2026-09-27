@@ -1,0 +1,71 @@
+{% extends "_layout.html" %}
+{% block title %}Scan results for {{ report.business_name }}{% endblock %}
+{% block robots %}noindex, nofollow{% endblock %}
+{% block nav_meta %}<div class="doc-meta">Prepared for {{ report.business_name }}<br>Free Foundation Scan, {{ scan_date }}</div>{% endblock %}
+{% block content %}
+
+  <div class="headline-block">
+    <div class="headline-inner">
+      <div class="eyebrow">Scan findings</div>
+      <div class="biz-name">{{ report.business_name }}</div>
+      <div class="headline-number">{{ estimate.headline_leak_monthly|money }}/mo</div>
+      <div class="headline-sub">Estimated revenue lost each month to slow follow-up on new leads, based on the numbers you gave us.</div>
+      <div class="scope-note">This scan covers your website, Google Business Profile and reviews, social media, ads, AI search, local search rankings, and directory listings.</div>
+    </div>
+  </div>
+
+  <div class="section-title">Findings</div>
+  <div class="section-sub">Ordered by estimated monthly impact, largest first. Each figure is estimated on its own, and they overlap, so they shouldn't be added together.</div>
+
+  {% for leak in leaks %}
+  <div class="leak-card">
+    <div class="leak-head">
+      <div class="leak-num"><span class="n">{{ loop.index }}</span> Leak</div>
+      <div class="leak-impact">~{{ leak.value|money }}/mo impact</div>
+    </div>
+    <div class="leak-title">{{ leak.title }}</div>
+    <div class="leak-row"><div class="lbl">Found</div><p>{{ leak.explanation }}</p></div>
+    {% if leak.fix %}
+    <div class="fix-box">
+      <span class="fix-name">Fix: {{ leak.fix }}</span>
+    </div>
+    {% endif %}
+  </div>
+  {% endfor %}
+
+  {% if estimate.dormant_lead_value > 0 %}
+  <div class="section-title">Upside you already have</div>
+  <div class="opt-card featured">
+    <div class="opt-label">Dormant lead opportunity</div>
+    <div class="opt-price">~{{ estimate.dormant_lead_value|money }}</div>
+    <div class="opt-includes">{{ estimate.dormant_lead_explanation }}</div>
+  </div>
+  {% endif %}
+
+  <div class="section-title">Your 10 foundation checks</div>
+  <div class="appendix-block">
+    <ul class="check-list">
+      {% for check in report.checks %}
+      <li>
+        <div><span class="check-name">{{ check.check_name }}</span>{{ check.summary }}</div>
+        <span class="check-score {% if check.score >= 8 %}good{% elif check.score >= 5 %}mid{% else %}low{% endif %}">{{ check.score }}/10</span>
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+
+  <div class="section-title">How this scan works</div>
+  <div class="appendix-block">
+    <h3>What we reviewed</h3>
+    <p>We tested your website's speed and accessibility, looked up your Google Business Profile and reviews, and searched social media, ad libraries, AI assistants, local search results, and business directories for {{ report.business_name }}.</p>
+    <p>Scores come from what we found directly. Dollar figures are estimates built from the answers you gave on the scan form and published industry research, not from your actual sales data.</p>
+  </div>
+
+  <div class="closing-block">
+    <h2>Ready when you are</h2>
+    <p>Book a short call and we'll walk through these findings with you, and what it would take to close each leak.</p>
+    {% if booking_url %}<a href="{{ booking_url }}" class="btn">Book a call</a>{% endif %}
+  </div>
+
+{% endblock %}
+{% block footer %}© Pheonix Digital — Rise above the rest. This report was prepared exclusively for {{ report.business_name }}.{% endblock %}

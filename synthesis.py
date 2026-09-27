@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import httpx
 
 from config import ANTHROPIC_API_KEY
-from models import CheckResult, LeakEstimate
+from models import CheckResult, LeakEstimate, SupportingLeak
 
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_MODEL = "claude-sonnet-5"
@@ -33,7 +33,12 @@ VOICE_EXAMPLES = [
 @dataclass
 class SynthesisResult:
     checks: List[CheckResult]
-    leak_narrative: str
+    # Each leak is polished separately (not woven into one narrative) because
+    # the email and report page show every leak in its own card - one combined
+    # narrative repeated the same text in several places.
+    headline_explanation: str
+    supporting_leaks: List[SupportingLeak]
+    dormant_lead_explanation: str
     review_note: Optional[str]
 
 
@@ -42,7 +47,11 @@ def _build_system_prompt() -> str:
     return f"""You are the final editing pass on a small-business marketing diagnostic report,
 before it goes out to the business owner.
 
-VOICE: direct, plain-language, no jargon. For tone calibration only (these describe specific
+VOICE: direct, plain-language, no jargon. Write as "we" (the agency) - never first-person
+singular ("I"). Explain any technical measurement in terms a business owner understands (e.g.
+say how long the page takes to load rather than naming a metric like LCP). Never use internal
+labels or all-caps tags such as "ESTIMATE, not measured data" or "UPSIDE/OPPORTUNITY" - convey
+the same meaning in a normal sentence. For tone calibration only (these describe specific
 checks from our site copy - don't force a line onto a check it doesn't actually describe),
 here's the voice we write in:
 {voice_block}
@@ -77,11 +86,17 @@ Respond with ONLY a JSON object, no markdown code fences, no commentary before o
 exactly this shape:
 {{
   "checks": [{{"check_name": "<copied exactly from input>", "summary": "<rewritten summary>"}}],
-  "leak_narrative": "<final narrative text for the leak estimate section, see instructions>",
+  "leak_text": {{
+    "headline_explanation": "<rewritten headline explanation>",
+    "supporting_leaks": [{{"label": "<copied exactly from input>", "explanation": "<rewritten explanation>"}}],
+    "dormant_lead_explanation": "<rewritten dormant lead explanation>"
+  }},
   "review_note": "<string, or null>"
 }}
 The "checks" array must contain exactly one entry per input check, in the same order, with
-check_name copied exactly as given - only the summary text changes."""
+check_name copied exactly as given - only the summary text changes. Likewise
+"leak_text.supporting_leaks" must contain exactly one entry per input supporting leak, with the
+label copied exactly as given."""
 
 
 def _build_user_prompt(
@@ -99,7 +114,7 @@ def _build_user_prompt(
 
     # Iterate generically - supporting_leaks may hold any number of entries
     # (currently 0, but this list will grow in a later step) and every one
-    # of them needs to be woven into leak_narrative, not just the first few.
+    # of them needs its own rewritten explanation, not just the first few.
     supporting_leaks_payload = [
         {"label": leak.label, "monthly_value": leak.monthly_value, "explanation": leak.explanation}
         for leak in leak_estimate.supporting_leaks
@@ -122,28 +137,30 @@ state as fact; "estimated" = self-reported/assumption-based, must be framed as a
 
 Here is the leak estimate data. Every figure in it is an ESTIMATE (self-reported answers or a
 stated assumption), never measured, so headline_leak_monthly and dormant_lead_value must always
-be framed as estimates in leak_narrative - never stated as a confirmed fact:
+be framed as estimates everywhere they're mentioned - never stated as a confirmed fact:
 {json.dumps(leak_payload, indent=2)}
 
 Tasks:
 1. Rewrite each check's summary in our voice - direct, plain-language, no jargon. Keep
    check_name exactly as given. Keep every fact and number accurate - improve the phrasing and
    consistency, don't invent or drop information.
-2. Write leak_narrative: present headline_leak_monthly as the headline number, explicitly framed
-   as an estimate based on self-reported answers, and preserve the existing connection to our
-   Speed-to-Lead bot as the fix for this specific leak - that connection is already present in
-   headline_explanation above, so keep it, don't drop it while rewriting.
-3. supporting_leaks currently has {len(supporting_leaks_payload)} entries. If there are any,
-   weave every single one into leak_narrative. Treat this as a variable-length list in general -
-   more entries may be added in a later step, and all of them need to show up, not just some.
-   If one of them is labeled "Reputation Gap," follow the REPUTATION GAP RULE from the system
-   prompt - pull specifics from the Online Reputation Scan check's summary above (if present
-   among the check results), describe them at a category level, and add the appropriate remedy
-   tie-in (review response service, and/or the BBB-complaint-specific caveat if a formal
-   complaint is present).
-4. End leak_narrative with one closing line connecting dormant_lead_value (also framed as an
-   estimate) to our Lead Revival campaign, preserving that connection from
-   dormant_lead_explanation above.
+2. Rewrite headline_explanation as a standalone 2-4 sentence explanation of the headline
+   (response-time) leak: frame the figure as an estimate based on the answers they gave us, and
+   keep the connection to our Speed-to-Lead bot as the fix for this specific leak. Do not mention
+   the supporting leaks or the dormant lead value here - each of those gets its own section.
+3. supporting_leaks currently has {len(supporting_leaks_payload)} entries. Rewrite the explanation
+   of every single one as a standalone 1-3 sentence explanation of that leak only, framed as an
+   estimate. Treat this as a variable-length list in general - more entries may be added later,
+   and all of them need a rewrite. If one of them is labeled "Reputation Gap," follow the
+   REPUTATION GAP RULE from the system prompt in that leak's explanation - pull specifics from the
+   Online Reputation Scan check's summary above (if present among the check results), describe
+   them at a category level, and add the appropriate remedy tie-in (review response service,
+   and/or the BBB-complaint-specific caveat if a formal complaint is present). A "Visibility Gap"
+   is missed opportunity (people who never found them), not customers they lost - say so plainly.
+4. Rewrite dormant_lead_explanation as a standalone 1-3 sentence explanation, framed as an
+   estimate, preserving the connection to our Lead Revival campaign.
+   Each of these pieces is shown in its own separate card, so none of them should repeat
+   another's content.
 5. flagged_for_review is {json.dumps(leak_estimate.flagged_for_review)}. If true, set
    review_note to a short INTERNAL-ONLY note (never shown to the client) saying this report
    needs a human glance before sending, and why. If false, set review_note to null."""
@@ -170,11 +187,16 @@ def _fallback_result(
     explanation text (which already carries the Speed-to-Lead/Lead Revival
     ties from calculation.py), and always surfaces the failure internally
     via review_note so a human knows the output wasn't AI-polished."""
-    narrative = f"{leak_estimate.headline_explanation} {leak_estimate.dormant_lead_explanation}"
-    note = f"AI synthesis step failed ({reason}); showing unpolished check summaries and the raw leak estimate text instead of a rewritten narrative."
+    note = f"AI synthesis step failed ({reason}); showing unpolished check summaries and the raw leak estimate text."
     if leak_estimate.flagged_for_review:
         note += " Additionally, flagged_for_review is True on the underlying leak estimate - please sanity check the figures before sending."
-    return SynthesisResult(checks=list(all_check_results), leak_narrative=narrative, review_note=note)
+    return SynthesisResult(
+        checks=list(all_check_results),
+        headline_explanation=leak_estimate.headline_explanation,
+        supporting_leaks=list(leak_estimate.supporting_leaks),
+        dormant_lead_explanation=leak_estimate.dormant_lead_explanation,
+        review_note=note,
+    )
 
 
 async def synthesize_report(
@@ -229,7 +251,22 @@ async def synthesize_report(
             for check in all_check_results
         ]
 
-        leak_narrative = parsed.get("leak_narrative") or leak_estimate.headline_explanation
+        leak_text = parsed.get("leak_text") or {}
+        headline_explanation = leak_text.get("headline_explanation") or leak_estimate.headline_explanation
+        dormant_lead_explanation = (
+            leak_text.get("dormant_lead_explanation") or leak_estimate.dormant_lead_explanation
+        )
+        polished_leaks_by_label = {
+            item["label"]: item["explanation"]
+            for item in leak_text.get("supporting_leaks", [])
+            if isinstance(item, dict) and item.get("label") and item.get("explanation")
+        }
+        # Same rule as the checks: keep every original leak and its dollar
+        # figure; only swap in rewritten text where Claude returned one.
+        supporting_leaks = [
+            leak.model_copy(update={"explanation": polished_leaks_by_label.get(leak.label, leak.explanation)})
+            for leak in leak_estimate.supporting_leaks
+        ]
         review_note = parsed.get("review_note")
         if leak_estimate.flagged_for_review and not review_note:
             # Safety net: don't let a missed instruction silently drop this.
@@ -238,7 +275,13 @@ async def synthesize_report(
                 "check the figures before sending."
             )
 
-        return SynthesisResult(checks=polished_checks, leak_narrative=leak_narrative, review_note=review_note)
+        return SynthesisResult(
+            checks=polished_checks,
+            headline_explanation=headline_explanation,
+            supporting_leaks=supporting_leaks,
+            dormant_lead_explanation=dormant_lead_explanation,
+            review_note=review_note,
+        )
 
     except Exception as exc:
         reason = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
@@ -313,7 +356,9 @@ if __name__ == "__main__":
         for check in result.checks:
             print(f"{check.check_name} ({check.score}/10): {check.summary}")
         print()
-        print("leak_narrative:")
-        print(result.leak_narrative)
+        print("headline_explanation:", result.headline_explanation)
+        for leak in result.supporting_leaks:
+            print(f"{leak.label} (${leak.monthly_value:,.0f}/mo): {leak.explanation}")
+        print("dormant_lead_explanation:", result.dormant_lead_explanation)
 
     asyncio.run(_main())

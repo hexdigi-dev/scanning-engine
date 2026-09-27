@@ -1,0 +1,79 @@
+{% extends "_layout.html" %}
+{% macro text_field(name, label, type="text", hint=None, wide=False, autocomplete=None, placeholder=None) %}
+<div class="field{% if wide %} wide{% endif %}{% if errors.get(name) %} has-error{% endif %}">
+  <label for="{{ name }}">{{ label }}</label>
+  <input id="{{ name }}" name="{{ name }}" type="{{ type }}" value="{{ values.get(name, '') }}" required
+    {% if autocomplete %}autocomplete="{{ autocomplete }}"{% endif %}
+    {% if placeholder %}placeholder="{{ placeholder }}"{% endif %}
+    {% if errors.get(name) %}aria-invalid="true" aria-describedby="{{ name }}-error"{% elif hint %}aria-describedby="{{ name }}-hint"{% endif %}>
+  {% if errors.get(name) %}<div class="error" id="{{ name }}-error">{{ errors[name] }}</div>
+  {% elif hint %}<div class="hint" id="{{ name }}-hint">{{ hint }}</div>{% endif %}
+</div>
+{% endmacro %}
+{% macro select_field(name, label, wide=False) %}
+<div class="field{% if wide %} wide{% endif %}{% if errors.get(name) %} has-error{% endif %}">
+  <label for="{{ name }}">{{ label }}</label>
+  <select id="{{ name }}" name="{{ name }}" required {% if errors.get(name) %}aria-invalid="true" aria-describedby="{{ name }}-error"{% endif %}>
+    <option value="" disabled {% if values.get(name) not in options[name] %}selected{% endif %}>Choose one</option>
+    {% for option in options[name] %}
+    <option value="{{ option }}" {% if values.get(name) == option %}selected{% endif %}>{{ option }}</option>
+    {% endfor %}
+  </select>
+  {% if errors.get(name) %}<div class="error" id="{{ name }}-error">{{ errors[name] }}</div>{% endif %}
+</div>
+{% endmacro %}
+{% block content %}
+
+  <div class="headline-block">
+    <div class="headline-inner">
+      <div class="eyebrow">Free Foundation Scan</div>
+      <h1 class="biz-name">Find out what your online presence is costing you</h1>
+      <p class="headline-sub">We run 10 checks across your website, Google profile, reviews, social media, ads, AI search, and local rankings, then estimate what each gap costs you each month. Your results arrive by email in a few minutes.</p>
+    </div>
+  </div>
+
+  <form class="form-card" method="post" action="/start" novalidate>
+    {% if errors.get("_form") %}<div class="form-error" role="alert">{{ errors["_form"] }}</div>
+    {% elif errors %}<div class="form-error" role="alert">Some answers need fixing before we can run your scan.</div>{% endif %}
+
+    <fieldset>
+      <legend>About you</legend>
+      <div class="field-grid">
+        {{ text_field("contact_name", "Your name", autocomplete="name", wide=True) }}
+        {{ text_field("email", "Email", type="email", autocomplete="email", hint="Your results are sent here.") }}
+        {{ text_field("phone", "Phone", type="tel", autocomplete="tel") }}
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Your business</legend>
+      <div class="field-grid">
+        {{ text_field("business_name", "Business name", autocomplete="organization", hint="As it appears on Google.") }}
+        {{ text_field("website_url", "Website", type="url", autocomplete="url", placeholder="yourbusiness.com") }}
+        {{ text_field("business_type", "What your business does", wide=True, placeholder="Water damage restoration & mold remediation") }}
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Your numbers</legend>
+      <div class="field-grid">
+        {{ select_field("monthly_leads", "New leads per month") }}
+        {{ text_field("avg_job_value", "Average job value", placeholder="$4,500") }}
+        {{ select_field("response_time", "How fast you usually respond to a new lead") }}
+        {{ select_field("close_rate", "Share of leads that become customers") }}
+        {{ select_field("dormant_leads", "Old leads that never became customers", wide=True) }}
+      </div>
+    </fieldset>
+
+    <div class="hp" aria-hidden="true">
+      <label for="company_fax">Leave this empty</label>
+      <input id="company_fax" name="company_fax" type="text" tabindex="-1" autocomplete="off">
+    </div>
+
+    <div class="form-actions">
+      <button type="submit" class="btn">Run my free scan</button>
+      <span class="note">Best guesses are fine. We only use these numbers to estimate your results.</span>
+    </div>
+  </form>
+
+{% endblock %}

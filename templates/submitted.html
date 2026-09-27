@@ -1,0 +1,16 @@
+{% extends "_layout.html" %}
+{% block title %}Your scan is running{% endblock %}
+{% block robots %}noindex, nofollow{% endblock %}
+{% block content %}
+  <div class="headline-block">
+    <div class="headline-inner">
+      <div class="eyebrow">Scan started</div>
+      <h1 class="biz-name">Your scan is running</h1>
+      <p class="headline-sub">It takes a few minutes to check everything.{% if email %} Your results will arrive at {{ email }}, with a link to your full report.{% endif %} You can close this page.</p>
+    </div>
+  </div>
+  <div class="appendix-block">
+    <h3>Don't see the email?</h3>
+    <p>Check your spam or promotions folder after about 10 minutes. It comes from Pheonix Digital.</p>
+  </div>
+{% endblock %}

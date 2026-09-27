@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import List, Literal
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, HttpUrl, TypeAdapter, field_validator
 
@@ -64,3 +64,5 @@ class ScanResponse(BaseModel):
     scanned_at: datetime
     checks: List[CheckResult]
     leak_estimate: LeakEstimate
+    report_id: Optional[str] = None
+    report_url: Optional[str] = None
