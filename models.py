@@ -48,6 +48,9 @@ class SupportingLeak(BaseModel):
     label: str
     monthly_value: float
     explanation: str
+    # Whole jobs per month the value represents (0.5 = one job every two
+    # months). Defaults keep reports saved before this field existed loadable.
+    jobs_per_month: float = 0.0
 
 
 class LeakEstimate(BaseModel):
@@ -57,6 +60,16 @@ class LeakEstimate(BaseModel):
     dormant_lead_value: float
     dormant_lead_explanation: str
     flagged_for_review: bool
+    headline_jobs_per_month: float = 0.0
+    dormant_jobs_per_month: float = 0.0
+    # Headline leak plus every supporting leak, each already rounded down to
+    # whole jobs. Excludes the dormant lead value, which is upside rather
+    # than a leak.
+    total_leak_monthly: float = 0.0
+    avg_job_value: float = 0.0
+    # The self-reported close rate (range midpoint), used to price the
+    # performance-based Lead Revival options.
+    close_rate: float = 0.0
 
 
 class ScanResponse(BaseModel):

@@ -121,14 +121,15 @@ be scanned:
 - Add a remedy tie-in, the same way headline_leak_monthly ties to the Speed-to-Lead bot and
   dormant_lead_value ties to Lead Revival:
   - If negative reviews appear on standard review platforms (Google, Yelp, Facebook, BBB's
-    review section, Yellow Pages, etc.), mention that the review response service can help
-    address those directly.
+    review section, Yellow Pages, etc.), mention that our Review Bot replies to reviews that
+    haven't been answered yet and sends review requests to every new client.
   - If a FORMAL BBB COMPLAINT exists - distinct from a BBB review, a separate formal process -
     explicitly call out that distinction: it requires a direct, personalized response from the
     business through BBB's own portal within a 14-day window, and can't be automated. Offer to
     help think through that response, but don't claim the bot can handle it.
-- If neither negative reviews nor a formal complaint show up in the check data, skip the remedy
-  tie-in rather than inventing one.
+- If neither negative reviews nor a formal complaint show up in the check data (for example,
+  the problem is simply having few or no reviews outside Google), tie it to our Review Bot,
+  which sends review requests to every new client to build up their reviews.
 
 Submit your finished work by calling the submit_report tool - that is the only output that
 gets used. The "checks" list must contain exactly one entry per input check, in the same order,
@@ -154,15 +155,23 @@ def _build_user_prompt(
     # (currently 0, but this list will grow in a later step) and every one
     # of them needs its own rewritten explanation, not just the first few.
     supporting_leaks_payload = [
-        {"label": leak.label, "monthly_value": leak.monthly_value, "explanation": leak.explanation}
+        {
+            "label": leak.label,
+            "monthly_value": leak.monthly_value,
+            "jobs_per_month": leak.jobs_per_month,
+            "explanation": leak.explanation,
+        }
         for leak in leak_estimate.supporting_leaks
     ]
 
     leak_payload = {
+        "average_job_value": leak_estimate.avg_job_value,
         "headline_leak_monthly": leak_estimate.headline_leak_monthly,
+        "headline_jobs_per_month": leak_estimate.headline_jobs_per_month,
         "headline_explanation": leak_estimate.headline_explanation,
         "supporting_leaks": supporting_leaks_payload,
         "dormant_lead_value": leak_estimate.dormant_lead_value,
+        "dormant_jobs_per_month": leak_estimate.dormant_jobs_per_month,
         "dormant_lead_explanation": leak_estimate.dormant_lead_explanation,
         "flagged_for_review": leak_estimate.flagged_for_review,
     }
@@ -192,11 +201,21 @@ Tasks:
    and all of them need a rewrite. If one of them is labeled "Reputation Gap," follow the
    REPUTATION GAP RULE from the system prompt in that leak's explanation - pull specifics from the
    Online Reputation Scan check's summary above (if present among the check results), describe
-   them at a category level, and add the appropriate remedy tie-in (review response service,
-   and/or the BBB-complaint-specific caveat if a formal complaint is present). A "Visibility Gap"
-   is missed opportunity (people who never found them), not customers they lost - say so plainly.
+   them at a category level, and add the appropriate remedy tie-in (our Review Bot, and/or the
+   BBB-complaint-specific caveat if a formal complaint is present). A "Visibility Gap" is missed
+   opportunity (people who never found them), not customers they lost - say so plainly; its fix
+   is our Google and social profile consistency fix, which can also include registering them
+   with AI search tools. A "Website Speed Leak" is fixed by a new, faster website from us with
+   online booking. End each supporting leak with one short sentence naming its fix; never
+   mention prices (they're shown separately).
 4. Rewrite dormant_lead_explanation as a standalone 1-3 sentence explanation, framed as an
-   estimate, preserving the connection to our Lead Revival campaign.
+   estimate, preserving the connection to our Lead Revival campaign. It is a monthly figure: ongoing marketing
+   keeps adding unconverted leads to their pool of old leads.
+   HOW TO STATE EVERY DOLLAR FIGURE: each one has already been rounded DOWN to whole jobs at the
+   business's own average job value, so present it as a floor in jobs and dollars, e.g. "at
+   least 3 jobs a month, or $7,500+". A jobs_per_month of 0.5 means "about one job every two
+   months". Use the dollar figures exactly as given; never say "up to", "roughly", or
+   "conservatively estimate", and never show cents.
    Each of these pieces is shown in its own separate card, so none of them should repeat
    another's content.
 5. flagged_for_review is {json.dumps(leak_estimate.flagged_for_review)}. If true, set

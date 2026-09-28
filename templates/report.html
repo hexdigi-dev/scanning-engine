@@ -8,37 +8,53 @@
     <div class="headline-inner">
       <div class="eyebrow">Scan findings</div>
       <div class="biz-name">{{ report.business_name }}</div>
-      <div class="headline-number">{{ estimate.headline_leak_monthly|money }}/mo</div>
-      <div class="headline-sub">Estimated revenue lost each month to slow follow-up on new leads, based on the numbers you gave us.</div>
+      {% if total_leak > 0 %}
+      <div class="headline-number">{{ total_leak|money }}+/mo</div>
+      <div class="headline-sub">in leaks detected across {{ leaks|length }} area{{ 's' if leaks|length != 1 }} of your business. Every figure is rounded down to whole jobs at your average job value{% if estimate.avg_job_value %} of {{ estimate.avg_job_value|money }}{% endif %}.</div>
+      {% else %}
+      <div class="headline-number">No major leaks</div>
+      <div class="headline-sub">We didn't find any gaps large enough to cost you a job a month. Your full results are below.</div>
+      {% endif %}
       <div class="scope-note">This scan covers your website, Google Business Profile and reviews, social media, ads, AI search, local search rankings, and directory listings.</div>
     </div>
   </div>
 
   <div class="section-title">Findings</div>
-  <div class="section-sub">Ordered by estimated monthly impact, largest first. Each figure is estimated on its own, and they overlap, so they shouldn't be added together.</div>
+  <div class="section-sub">Ordered by estimated monthly impact, largest first. Each figure is a floor: the fewest jobs we believe you're losing, not the most.</div>
 
   {% for leak in leaks %}
   <div class="leak-card">
     <div class="leak-head">
       <div class="leak-num"><span class="n">{{ loop.index }}</span> Leak</div>
-      <div class="leak-impact">~{{ leak.value|money }}/mo impact</div>
+      <div class="leak-impact">{{ leak.value|money }}+/mo · {{ leak.jobs|jobs }}</div>
     </div>
     <div class="leak-title">{{ leak.title }}</div>
     <div class="leak-row"><div class="lbl">Found</div><p>{{ leak.explanation }}</p></div>
     {% if leak.fix %}
     <div class="fix-box">
-      <span class="fix-name">Fix: {{ leak.fix }}</span>
+      <span class="fix-name">Fix: {{ leak.fix.name }}</span>
+      <span class="fix-price">{{ leak.fix.price }}{% if leak.fix.upgrade %}<span class="fix-upgrade">or {{ leak.fix.upgrade }}</span>{% endif %}</span>
     </div>
     {% endif %}
   </div>
   {% endfor %}
 
+  {% if leaks|length == 0 %}
+  <div class="appendix-block"><p>No leaks detected from the checks we ran.</p></div>
+  {% endif %}
+
   {% if estimate.dormant_lead_value > 0 %}
   <div class="section-title">Upside you already have</div>
   <div class="opt-card featured">
     <div class="opt-label">Dormant lead opportunity</div>
-    <div class="opt-price">~{{ estimate.dormant_lead_value|money }}</div>
+    <div class="opt-price">{{ estimate.dormant_lead_value|money }}+/mo</div>
+    <div class="opt-sublabel">{% if estimate.dormant_jobs_per_month %}{{ estimate.dormant_jobs_per_month|jobs|capitalize }} revived {% endif %}from leads you already have</div>
     <div class="opt-includes">{{ estimate.dormant_lead_explanation }}</div>
+    <div class="fix-box">
+      <span class="fix-name">Fix: {{ lead_revival_fix.name }}</span>
+      {% if booking_url %}<a href="{{ booking_url }}" class="btn btn-small">Book a call for pricing</a>
+      {% else %}<span class="fix-price">Book a call for pricing</span>{% endif %}
+    </div>
   </div>
   {% endif %}
 

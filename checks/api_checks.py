@@ -2,6 +2,7 @@ import asyncio
 import os
 import sys
 from typing import Optional
+from urllib.parse import urlparse
 
 # Allow running this file directly (`python checks/api_checks.py`) as well as
 # as a package module (`python -m checks.api_checks`).
@@ -15,6 +16,9 @@ from models import CheckResult
 PAGESPEED_URL = "https://www.googleapis.com/pagespeedonline/v5/runPagespeed"
 FIND_PLACE_URL = "https://maps.googleapis.com/maps/api/place/findplacefromtext/json"
 PLACE_DETAILS_URL = "https://maps.googleapis.com/maps/api/place/details/json"
+TEXT_SEARCH_URL = "https://maps.googleapis.com/maps/api/place/textsearch/json"
+# How many same-name Google listings to compare against the submitted website.
+MAX_CANDIDATES_TO_CHECK = 5
 
 REQUEST_TIMEOUT = 30.0
 PAGESPEED_TIMEOUT = 90.0  # Lighthouse audits (esp. with 2 categories) can run well past 30s
@@ -124,6 +128,58 @@ def _extract_city_state(result: dict) -> Optional[str]:
     return result.get("formatted_address")
 
 
+def _site_host(url: Optional[str]) -> Optional[str]:
+    """'https://www.Example.com/contact' -> 'example.com'."""
+    if not url:
+        return None
+    if "://" not in url:
+        url = f"https://{url}"
+    host = (urlparse(url).hostname or "").lower()
+    if host.startswith("www."):
+        host = host[4:]
+    return host or None
+
+
+def _same_site(a: Optional[str], b: Optional[str]) -> bool:
+    if not a or not b:
+        return False
+    return a == b or a.endswith("." + b) or b.endswith("." + a)
+
+
+async def _find_place_matching_website(
+    client: httpx.AsyncClient, business_name: str, website_url: str
+) -> tuple[Optional[str], int]:
+    """Many businesses share a name ("Scott's Plumbing" exists in several
+    states), so the first search result can be the wrong company. This checks
+    up to MAX_CANDIDATES_TO_CHECK same-name listings and returns the place_id
+    of the one whose Google listing links to the submitted website, plus how
+    many candidates were found. Returns (None, count) when none match."""
+    search_response = await client.get(
+        TEXT_SEARCH_URL, params={"query": business_name, "key": GOOGLE_API_KEY}
+    )
+    search_data = search_response.json()
+    if search_response.status_code != 200 or search_data.get("status") not in ("OK", "ZERO_RESULTS"):
+        raise RuntimeError(f"Places text search failed (status: {search_data.get('status')})")
+
+    candidates = search_data.get("results", [])[:MAX_CANDIDATES_TO_CHECK]
+    target_host = _site_host(website_url)
+
+    async def candidate_host(place_id: str) -> Optional[str]:
+        response = await client.get(
+            PLACE_DETAILS_URL,
+            params={"place_id": place_id, "fields": "website", "key": GOOGLE_API_KEY},
+        )
+        return _site_host(response.json().get("result", {}).get("website"))
+
+    hosts = await asyncio.gather(
+        *(candidate_host(c["place_id"]) for c in candidates), return_exceptions=True
+    )
+    for candidate, host in zip(candidates, hosts):
+        if isinstance(host, str) and _same_site(host, target_host):
+            return candidate["place_id"], len(candidates)
+    return None, len(candidates)
+
+
 async def check_google_presence(
     business_name: str, website_url: str
 ) -> tuple[list[CheckResult], dict]:
@@ -159,38 +215,35 @@ async def check_google_presence(
 
     try:
         async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
-            find_params = {
-                "input": business_name,
-                "inputtype": "textquery",
-                "fields": "place_id,name",
-                "key": GOOGLE_API_KEY,
-            }
-            find_response = await client.get(FIND_PLACE_URL, params=find_params)
-            find_data = find_response.json()
-
-            if find_response.status_code != 200 or find_data.get("status") != "OK":
-                status = find_data.get("status", f"HTTP {find_response.status_code}")
+            place_id, candidate_count = await _find_place_matching_website(
+                client, business_name, website_url
+            )
+            if place_id is None:
+                if candidate_count == 0:
+                    return not_found_checks, raw_data
+                # Listings with this name exist, but none link to this
+                # website - reporting on one of them would risk describing a
+                # different company.
                 checks = [
                     CheckResult(
                         check_name="Google Business Profile",
                         score=0,
-                        summary=f"Could not find a Google Business Profile for '{business_name}' (status: {status}).",
+                        summary=(
+                            f"We found Google listings named '{business_name}', but none of them "
+                            f"link to {_site_host(website_url)}, so we couldn't confirm which one "
+                            "is yours. Adding your website to your Google Business Profile helps "
+                            "customers and search engines connect the two."
+                        ),
                         source_type="measured",
                     ),
                     CheckResult(
                         check_name="Google Reviews",
                         score=0,
-                        summary="No reviews available - business profile not found.",
+                        summary="No reviews checked - we couldn't confirm which Google listing is yours.",
                         source_type="measured",
                     ),
                 ]
                 return checks, raw_data
-
-            candidates = find_data.get("candidates", [])
-            if not candidates:
-                return not_found_checks, raw_data
-
-            place_id = candidates[0]["place_id"]
 
             details_params = {
                 "place_id": place_id,
