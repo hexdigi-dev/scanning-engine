@@ -47,6 +47,15 @@ TEXT_US_MARKERS = (
     "text us", "text now", "send us a text",
 )
 CONTACT_FORM_MARKERS = ("<form", "wpforms", "gform_", "contact-form", "hsforms", "jotform", "typeform")
+# Links worth following to find a contact form or booking tool that isn't
+# on the homepage itself (e.g. a separate Contact page).
+SECONDARY_PAGE_WORDS = ("contact", "quote", "estimate", "schedule", "book", "appointment", "request")
+MAX_SECONDARY_PAGES = 2
+# Homepages smaller than this are usually a bot-block or redirect page.
+MIN_REAL_PAGE_BYTES = 3000
+BLOCKED_PAGE_MARKERS = ("captcha", "cf-browser-verification", "access denied", "are you a robot")
+VIEWPORT_TAG = re.compile(r"<meta\b[^>]*\bviewport\b[^>]*>", re.I)
+
 CTA_WORDS = (
     "call", "text", "book", "schedule", "order", "quote", "estimate", "contact",
     "request", "get started", "appointment", "reserve",
@@ -111,6 +120,9 @@ async def check_homepage_signals(website_url: str) -> dict:
         return {}
 
     html = raw_html.lower()
+    if len(html) < MIN_REAL_PAGE_BYTES or any(marker in html[:5000] for marker in BLOCKED_PAGE_MARKERS):
+        print(f"[website] {website_url} looks blocked or empty ({len(html)} bytes) - website signals not checked")
+        return {}
     collector = _LinkCollector()
     try:
         collector.feed(raw_html)
@@ -147,14 +159,41 @@ async def check_homepage_signals(website_url: str) -> dict:
         broken += sum(1 for ok in results if not ok)
     checked_ctas = sum(1 for href, _ in ctas if href.lower().startswith(("tel:", "sms:"))) + len(web_ctas)
 
+    # Contact forms and booking tools often live on a separate page (Contact,
+    # Get a Quote, Book), so read up to MAX_SECONDARY_PAGES of those too.
+    site_host = urlparse(base_url).hostname
+    secondary_urls = []
+    for href, text in collector.links:
+        target = urljoin(base_url, href)
+        if urlparse(target).hostname != site_host or target in secondary_urls:
+            continue
+        label = f"{href} {text}".lower()
+        if any(word in label for word in SECONDARY_PAGE_WORDS):
+            secondary_urls.append(target)
+        if len(secondary_urls) >= MAX_SECONDARY_PAGES:
+            break
+    extra_html = ""
+    if secondary_urls:
+        async with httpx.AsyncClient(timeout=LINK_CHECK_TIMEOUT, follow_redirects=True) as client:
+            pages = await asyncio.gather(
+                *(client.get(url, headers={"User-Agent": USER_AGENT}) for url in secondary_urls),
+                return_exceptions=True,
+            )
+        extra_html = " ".join(
+            page.text.lower() for page in pages if isinstance(page, httpx.Response) and page.status_code == 200
+        )
+    all_html = html + " " + extra_html
+
+    viewport_tags = VIEWPORT_TAG.findall(raw_html)
+    responsive = any("device-width" in tag.lower() or "initial-scale" in tag.lower() for tag in viewport_tags)
+
     return {
-        "responsive": bool(re.search(r"<meta[^>]+name=[\"']viewport[\"'][^>]*width=device-width", html))
-        or bool(re.search(r"<meta[^>]+content=[\"'][^\"']*width=device-width[^>]+name=[\"']viewport", html)),
-        "tap_to_call": 'href="tel:' in html or "href='tel:" in html,
-        "text_us": 'href="sms:' in html or "href='sms:" in html or any(m in html for m in TEXT_US_MARKERS),
-        "contact_form": any(marker in html for marker in CONTACT_FORM_MARKERS),
-        "online_booking": any(marker in html for marker in BOOKING_MARKERS),
-        "online_ordering": any(marker in html for marker in ORDERING_MARKERS),
+        "responsive": responsive,
+        "tap_to_call": "href=\"tel:" in html or "href='tel:" in html or "href=tel:" in html,
+        "text_us": "href=\"sms:" in all_html or "href='sms:" in all_html or any(m in all_html for m in TEXT_US_MARKERS),
+        "contact_form": any(marker in all_html for marker in CONTACT_FORM_MARKERS),
+        "online_booking": any(marker in all_html for marker in BOOKING_MARKERS),
+        "online_ordering": any(marker in all_html for marker in ORDERING_MARKERS),
         "cta_labels": [text or href for href, text in ctas][:15],
         "total_ctas": checked_ctas,
         "broken_ctas": broken,

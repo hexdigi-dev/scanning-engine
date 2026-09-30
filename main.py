@@ -260,6 +260,13 @@ async def scan(request: ScanRequest, http_request: Request) -> ScanResponse:
         ),
     )
 
+    print(
+        f"[scan] website signals for '{request.business_name}': screenshot "
+        f"{'captured' if raw_website_data.get('screenshot') else 'MISSING'}, homepage "
+        f"{'read' if homepage_signals else 'NOT read'}, CTA assessment "
+        f"{({k: v for k, v in (cta_assessment or {}).items() if k != 'notes'}) or 'FAILED'}"
+    )
+
     all_checks = website_checks + presence_checks + [
         social_check,
         ad_activity_check,

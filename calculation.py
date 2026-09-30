@@ -46,10 +46,10 @@ RESPONSE_TIME_LOSS_SHARE = {
 # Stated assumption, not measured: share of the dormant-lead pool a revival
 # campaign turns into jobs each month. Monthly rather than one-time because a
 # business that keeps marketing keeps adding unconverted leads to the pool.
-DORMANT_MONTHLY_REVIVAL_RATE = 0.04
+DORMANT_MONTHLY_REVIVAL_RATE = 0.08
 # Revived jobs per month are capped at this share of current monthly
 # customers, so a very large old-lead list can't produce an unrealistic figure.
-DORMANT_REVIVAL_CAP_SHARE = 0.50
+DORMANT_REVIVAL_CAP_SHARE = 1.00
 
 # Rough plausibility ceiling multiplier for the sanity check. The combined
 # headline + supporting-leaks total is structurally bounded at ~1.2x
@@ -472,7 +472,7 @@ def calculate_leak_estimate(
     )
     dormant_lead_value = round(dormant_jobs * avg_job_value_numeric, 2)
     dormant_lead_explanation = (
-        "ESTIMATE, not measured data - assumes about 4% of your self-reported dormant leads "
+        "ESTIMATE, not measured data - assumes about 8% of your self-reported dormant leads "
         f"({scan_request.dormant_leads} → ~{dormant_leads_numeric:g}) can be revived into jobs each "
         "month, rounded down to whole jobs at your self-reported average job value "
         f"({scan_request.avg_job_value} → ~${avg_job_value_numeric:,.2f}) - about "

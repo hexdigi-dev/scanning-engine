@@ -416,10 +416,14 @@ async def check_google_presence(
             return [profile_check, reviews_check], raw_data
 
     except Exception as exc:
-        summary = f"Google presence check failed: {type(exc).__name__}: {exc}" if str(exc) else f"Google presence check failed: {type(exc).__name__}"
+        # An error means we couldn't check - never report it as "no profile",
+        # which would invent a large foundation leak.
+        print(f"[google] presence check failed for '{business_name}': {type(exc).__name__}: {exc}")
+        raw_data["gbp_found"] = None
+        summary = "We couldn't reach Google to check your Business Profile this time."
         checks = [
-            CheckResult(check_name="Google Business Profile", score=0, summary=summary, source_type="measured"),
-            CheckResult(check_name="Google Reviews", score=0, summary=summary, source_type="measured"),
+            CheckResult(check_name="Google Business Profile", score=0, summary=summary, source_type="not_checked"),
+            CheckResult(check_name="Google Reviews", score=0, summary=summary, source_type="not_checked"),
         ]
         return checks, raw_data
 

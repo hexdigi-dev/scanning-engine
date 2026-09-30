@@ -87,8 +87,9 @@
 
   {% if estimate.dormant_lead_value > 0 %}
   <div class="opt-card featured">
-    <div class="opt-label">Dormant lead opportunity</div>
-    <div class="opt-price">Up to {{ estimate.dormant_lead_value|money }}/mo</div>
+    <div class="opt-label">Dormant leads</div>
+    <div class="opt-price"><span class="bonus-tag">Bonus opportunity:</span> Up to {{ estimate.dormant_lead_value|money }}/mo</div>
+    <div class="opt-note">Not included in your leak total above.</div>
     <div class="opt-sublabel">{% if estimate.dormant_jobs_per_month %}{{ estimate.dormant_jobs_per_month|jobs|capitalize }} revived {% endif %}from leads you already have</div>
     <div class="opt-includes">{{ estimate.dormant_lead_explanation }}</div>
     <div class="fix-box">

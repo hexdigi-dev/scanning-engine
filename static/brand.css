@@ -77,6 +77,8 @@ nav img{height:34px;}
   -webkit-background-clip:text; background-clip:text; color:transparent;
 }
 .opt-includes{font-size:13.5px; color:var(--gray-text); line-height:1.6;}
+.bonus-tag{display:block; font-size:0.62em; letter-spacing:0.5px;}
+.opt-note{font-size:12.5px; color:var(--gray-text); margin:-2px 0 10px;}
 .opt-sublabel{font-size:12.5px; font-weight:700; color:var(--gray-text); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:12px;}
 
 /* Appendix */
