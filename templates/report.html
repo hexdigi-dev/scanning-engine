@@ -2,6 +2,41 @@
 {% block title %}Scan results for {{ report.business_name }}{% endblock %}
 {% block robots %}noindex, nofollow{% endblock %}
 {% block nav_meta %}<div class="doc-meta">Prepared for {{ report.business_name }}<br>Free Foundation Scan, {{ scan_date }}</div>{% endblock %}
+
+{% macro fix_box(fix) %}
+<div class="fix-box">
+  <span class="fix-name">Fix: {{ fix.name }}{% if fix.detail %}<span class="fix-upgrade">{{ fix.detail }}</span>{% endif %}</span>
+  <span class="fix-price">{{ fix.price }}{% if fix.upgrade %}<span class="fix-upgrade">or {{ fix.upgrade }}</span>{% endif %}</span>
+</div>
+{% endmacro %}
+
+{% macro leak_card(card, extra_fix=None) %}
+<div class="leak-card">
+  <div class="leak-head">
+    <div class="leak-title">{{ card.title }}</div>
+    <div class="leak-impact">Up to {{ card.value|money }}/mo · {{ card.jobs|jobs(card.capped) }}</div>
+  </div>
+  {% if card.issues %}
+  <div class="leak-row"><div class="lbl">Issues</div><ul class="issue-list">{% for issue in card.issues %}<li>{{ issue }}</li>{% endfor %}</ul></div>
+  {% endif %}
+  <div class="leak-row"><div class="lbl">What it means</div><p>{{ card.explanation }}</p></div>
+  {% if card.fix %}{{ fix_box(card.fix) }}{% endif %}
+  {% if extra_fix %}{{ fix_box(extra_fix) }}{% endif %}
+</div>
+{% endmacro %}
+
+{% macro score_list(checks) %}
+<ul class="check-list">
+  {% for check in checks %}
+  <li>
+    <div><span class="check-name">{{ check.check_name }}</span>{{ check.summary }}</div>
+    {% if check.source_type == "not_checked" %}<span class="check-score unchecked">Not checked</span>
+    {% else %}<span class="check-score {% if check.score >= 8 %}good{% elif check.score >= 5 %}mid{% else %}low{% endif %}">{{ check.score }}/10</span>{% endif %}
+  </li>
+  {% endfor %}
+</ul>
+{% endmacro %}
+
 {% block content %}
 
   <div class="headline-block">
@@ -9,45 +44,51 @@
       <div class="eyebrow">Scan findings</div>
       <div class="biz-name">{{ report.business_name }}</div>
       {% if total_leak > 0 %}
-      <div class="headline-number">{{ total_leak|money }}+/mo</div>
-      <div class="headline-sub">in leaks detected across {{ leaks|length }} area{{ 's' if leaks|length != 1 }} of your business. Every figure is rounded down to whole jobs at your average job value{% if estimate.avg_job_value %} of {{ estimate.avg_job_value|money }}{% endif %}.</div>
+      <div class="headline-sub">Up to</div>
+      <div class="headline-number">{{ total_leak|money }}/mo</div>
+      <div class="headline-sub">in leaks detected across {{ area_count }} area{{ 's' if area_count != 1 }} of your business, based on your numbers{% if estimate.avg_job_value %} and your average job value of {{ estimate.avg_job_value|money }}{% endif %}.</div>
       {% else %}
       <div class="headline-number">No major leaks</div>
-      <div class="headline-sub">We didn't find any gaps large enough to cost you a job a month. Your full results are below.</div>
+      <div class="headline-sub">We didn't find gaps large enough to estimate a cost. Your full results are below.</div>
       {% endif %}
-      <div class="scope-note">This scan covers your website, Google Business Profile and reviews, social media, ads, AI search, local search rankings, and directory listings.</div>
+      <div class="scope-note">This scan covers your online foundation (Google, reviews, rankings, listings, social, AI search) and your website's performance.</div>
     </div>
   </div>
 
-  <div class="section-title">Findings</div>
-  <div class="section-sub">Ordered by estimated monthly impact, largest first. Each figure is a floor: the fewest jobs we believe you're losing, not the most.</div>
-
-  {% for leak in leaks %}
-  <div class="leak-card">
-    <div class="leak-head">
-      <div class="leak-num"><span class="n">{{ loop.index }}</span> Leak</div>
-      <div class="leak-impact">{{ leak.value|money }}+/mo · {{ leak.jobs|jobs }}</div>
-    </div>
-    <div class="leak-title">{{ leak.title }}</div>
-    <div class="leak-row"><div class="lbl">Found</div><p>{{ leak.explanation }}</p></div>
-    {% if leak.fix %}
-    <div class="fix-box">
-      <span class="fix-name">Fix: {{ leak.fix.name }}</span>
-      <span class="fix-price">{{ leak.fix.price }}{% if leak.fix.upgrade %}<span class="fix-upgrade">or {{ leak.fix.upgrade }}</span>{% endif %}</span>
-    </div>
-    {% endif %}
+  <div class="section-title">1. Online foundation</div>
+  <div class="section-sub">How many people can find you, and trust you, before they ever reach your website.</div>
+  {% if foundation_card %}{{ leak_card(foundation_card, reputation_fix) }}
+  {% else %}<div class="appendix-block"><p>No major foundation leaks found.</p></div>{% endif %}
+  <div class="appendix-block">
+    <h3>What we checked</h3>
+    {{ score_list(foundation_checks) }}
   </div>
-  {% endfor %}
 
-  {% if leaks|length == 0 %}
-  <div class="appendix-block"><p>No leaks detected from the checks we ran.</p></div>
-  {% endif %}
+  <div class="section-title">2. Website performance</div>
+  <div class="section-sub">How well your website turns the visitors it already gets into calls, texts, bookings, and form fills.</div>
+  {% if website_card %}{{ leak_card(website_card) }}
+  {% else %}<div class="appendix-block"><p>No major website leaks found.</p></div>{% endif %}
+  <div class="appendix-block">
+    <h3>What we checked</h3>
+    <ul class="check-list">
+      {% for row in website_rows %}
+      <li>
+        <div><span class="check-name">{{ row.name }}</span>{{ row.text }}</div>
+        <span class="check-score {% if row.status == 'pass' %}good{% elif row.status == 'fail' %}low{% else %}unchecked{% endif %}">{% if row.status == 'pass' %}Pass{% elif row.status == 'fail' %}Needs work{% else %}Not checked{% endif %}</span>
+      </li>
+      {% endfor %}
+    </ul>
+    {% if website_checks %}{{ score_list(website_checks) }}{% endif %}
+  </div>
+
+  <div class="section-title">3. Other potential leaks</div>
+  <div class="section-sub">Based on the answers you gave us about how you handle leads and marketing.</div>
+  {% for card in other_cards %}{{ leak_card(card) }}{% endfor %}
 
   {% if estimate.dormant_lead_value > 0 %}
-  <div class="section-title">Upside you already have</div>
   <div class="opt-card featured">
     <div class="opt-label">Dormant lead opportunity</div>
-    <div class="opt-price">{{ estimate.dormant_lead_value|money }}+/mo</div>
+    <div class="opt-price">Up to {{ estimate.dormant_lead_value|money }}/mo</div>
     <div class="opt-sublabel">{% if estimate.dormant_jobs_per_month %}{{ estimate.dormant_jobs_per_month|jobs|capitalize }} revived {% endif %}from leads you already have</div>
     <div class="opt-includes">{{ estimate.dormant_lead_explanation }}</div>
     <div class="fix-box">
@@ -58,23 +99,16 @@
   </div>
   {% endif %}
 
-  <div class="section-title">Your 10 foundation checks</div>
-  <div class="appendix-block">
-    <ul class="check-list">
-      {% for check in report.checks %}
-      <li>
-        <div><span class="check-name">{{ check.check_name }}</span>{{ check.summary }}</div>
-        <span class="check-score {% if check.score >= 8 %}good{% elif check.score >= 5 %}mid{% else %}low{% endif %}">{{ check.score }}/10</span>
-      </li>
-      {% endfor %}
-    </ul>
+  <div class="appendix-block ad-status">
+    <h3>Paid ads: {{ ad_status }}</h3>
+    {% if ad_check %}<p>{{ ad_check.summary }}</p>{% endif %}
   </div>
 
   <div class="section-title">How this scan works</div>
   <div class="appendix-block">
     <h3>What we reviewed</h3>
-    <p>We tested your website's speed and accessibility, looked up your Google Business Profile and reviews, and searched social media, ad libraries, AI assistants, local search results, and business directories for {{ report.business_name }}.</p>
-    <p>Scores come from what we found directly. Dollar figures are estimates built from the answers you gave on the scan form and published industry research, not from your actual sales data.</p>
+    <p>We looked up your Google Business Profile and reviews, searched review sites, social media, business directories, local search results, and AI assistants for {{ report.business_name }}, and tested your website's speed, mobile layout, accessibility, and calls-to-action.</p>
+    <p>Scores come from what we found directly. Dollar figures are estimates of what each issue could be costing you, built from the answers you gave on the scan form and published industry research, not from your actual sales data.</p>
   </div>
 
   <div class="closing-block">

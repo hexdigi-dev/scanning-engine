@@ -40,7 +40,7 @@ RESPONSE_TIME_LOSS_SHARE = {
     "Under 5 minutes": 0.0,
     "Within an hour": 0.15,
     "Same day": 0.25,
-    "Next day or longer": 0.40,
+    "Next day or longer": 0.50,
 }
 
 # Stated assumption, not measured: share of the dormant-lead pool a revival
@@ -75,10 +75,57 @@ REPUTATION_GAP_DETERRENCE_CEILING = 0.05
 
 # Google's "good" Largest Contentful Paint threshold, in seconds.
 LCP_BASELINE_SECONDS = 2.5
-# Published conversion-rate research: roughly a 7% conversion drop per
-# additional second of load time beyond the baseline, capped at 20%.
-LCP_CONVERSION_PENALTY_PER_SECOND = 0.07
-LCP_CONVERSION_PENALTY_CAP = 0.20
+# --- Website Conversion Leak ---
+# An optimized home-service website turns about 10% of visitors into leads
+# (top contractor sites convert 8-12%; the median is 2-4%). Each problem
+# found keeps only (1 - loss) of the conversions, and the losses multiply.
+OPTIMIZED_CONVERSION_RATE = 0.10
+MIN_ESTIMATED_CONVERSION_RATE = 0.005
+# Load time (Portent lead-gen research, rounded): (seconds at or above, loss)
+LOAD_TIME_LOSSES = [(7.0, 0.50), (6.0, 0.40), (5.0, 0.30), (4.0, 0.20), (3.0, 0.10)]
+NOT_RESPONSIVE_LOSS = 0.35
+NO_CLEAR_CTA_LOSS = 0.35
+MAIN_ACTION_WRONG_LOSS = 0.35
+# Distinct competing goals on the page (all contact channels count as one).
+COMPETING_GOAL_LOSSES = {3: 0.20, 4: 0.35, 5: 0.50}
+NO_TAP_TO_CALL_LOSS = 0.35
+NO_TEXT_US_LOSS = 0.35
+NO_BOOKING_LOSS_BOOKING_BUSINESS = 0.50  # appointment- or order-based businesses
+NO_BOOKING_LOSS_OTHER = 0.25
+NO_CONTACT_FORM_LOSS = 0.25
+# Broken calls-to-action: loss = broken / total (each assumed equally used).
+# Combined website loss = three-quarters of the sum of the individual losses,
+# capped at 95%, so the total climbs gently as issues pile up. It's applied
+# to the leads the website currently brings in, and the result is capped at
+# WEBSITE_JOBS_CAP jobs a month (shown as "4+").
+WEBSITE_COMBINED_LOSS_WEIGHT = 0.75
+WEBSITE_COMBINED_LOSS_CAP = 0.95
+WEBSITE_JOBS_CAP = 4.0
+
+# --- Online Foundation Leak ---
+# Share of additional leads each foundation gap could be keeping away:
+#  - Google: complete profiles make customers 70% more likely to visit and
+#    50% more likely to consider purchasing.
+#  - BrightLocal 2026: 68% only use businesses with 4+ stars, 31% require
+#    4.5+; 47% won't use a business with fewer than 20 reviews.
+#  - The Google map 3-pack gets ~42% of clicks on local searches.
+#  - Whitespark 2026: citations ~6-7% and social ~4% of map ranking weight.
+FOUNDATION_LOSSES = {
+    "gbp_incomplete": 0.50,
+    "rating_below_4": 0.50,
+    "rating_below_4_5": 0.25,
+    "few_reviews": 0.40,
+    "not_in_3_pack": 0.40,
+    "weak_off_google": 0.20,
+    "not_in_ai": 0.15,
+    "inconsistent_nap": 0.10,
+    "no_social": 0.10,
+}
+GBP_MIN_PHOTOS = 3
+MIN_TRUSTED_REVIEWS = 20
+FOUNDATION_COMBINED_LOSS_WEIGHT = 0.50
+FOUNDATION_COMBINED_CAP = 0.95
+FOUNDATION_JOBS_CAP = 4.0
 # Stated assumption: only about half of a local service business's leads
 # come through its website (the rest are calls, referrals, repeat customers),
 # so a slow site only affects that share.
@@ -92,20 +139,25 @@ def _parse_currency(value: str) -> float:
     return float(match.group(0).replace(",", ""))
 
 
+JOB_ROUNDING_TOLERANCE = 0.10
+
+
 def _whole_jobs(raw_jobs: float) -> float:
-    """Every estimate is stated as whole jobs at the business's own average
-    job value, rounded DOWN, so figures read as floors the owner can sanity
-    check ("about 3 jobs a month") rather than falsely precise dollars. Any
-    detected leak below one job counts as one job every two months (0.5)."""
+    """Every estimate is stated in jobs at the business's own average job
+    value, rounded DOWN to the nearest half job (0.5 = one job every two
+    months), so figures read as floors the owner can sanity check rather
+    than falsely precise dollars. A value within JOB_ROUNDING_TOLERANCE of
+    the next half job rounds up to it (0.98 -> 1, 1.43 -> 1.5). Any detected
+    leak below half a job still counts as half a job."""
     if raw_jobs <= 0:
         return 0.0
-    whole = float(math.floor(raw_jobs))
-    return whole if whole >= 1 else 0.5
+    halves = math.floor((raw_jobs + JOB_ROUNDING_TOLERANCE) * 2) / 2
+    return max(halves, 0.5)
 
 
 def calculate_visibility_gap(
-    ai_visibility_score: int,
-    local_ranking_score: int,
+    ai_visibility_score: Optional[int],
+    local_ranking_score: Optional[int],
     monthly_leads: float,
     close_rate: float,
     avg_job_value: float,
@@ -113,8 +165,13 @@ def calculate_visibility_gap(
     """UPSIDE/OPPORTUNITY, not a loss - invisibility in AI search results and
     local rankings means never entering consideration in the first place,
     not losing a customer you already had. Only calculated when the two
-    AI-agent search checks average out to genuinely poor visibility."""
-    avg_score = (ai_visibility_score + local_ranking_score) / 2
+    AI-agent search checks average out to genuinely poor visibility. Checks
+    that couldn't run (None) are left out; if neither ran, there's no
+    estimate."""
+    scores = [score for score in (ai_visibility_score, local_ranking_score) if score is not None]
+    if not scores:
+        return None
+    avg_score = sum(scores) / len(scores)
     if avg_score >= VISIBILITY_GAP_SCORE_THRESHOLD:
         return None
 
@@ -139,10 +196,11 @@ def calculate_visibility_gap(
 
 
 def calculate_reputation_gap(
-    reputation_score: int, monthly_leads: float, close_rate: float, avg_job_value: float
+    reputation_score: Optional[int], monthly_leads: float, close_rate: float, avg_job_value: float
 ) -> Optional[SupportingLeak]:
-    """Only calculated when the overall reputation score is genuinely poor."""
-    if reputation_score >= REPUTATION_GAP_SCORE_THRESHOLD:
+    """Only calculated when the reputation scan actually ran (not None) and
+    its score is genuinely poor."""
+    if reputation_score is None or reputation_score >= REPUTATION_GAP_SCORE_THRESHOLD:
         return None
 
     severity = (REPUTATION_GAP_SCORE_THRESHOLD - reputation_score) / REPUTATION_GAP_SCORE_THRESHOLD
@@ -163,39 +221,206 @@ def calculate_reputation_gap(
     )
 
 
-def calculate_website_speed_leak(
-    lcp_seconds: Optional[float], current_customers: float, avg_job_value: float
+def calculate_foundation_leak(
+    presence: dict,
+    ai_visibility_score: Optional[int],
+    local_ranking_score: Optional[int],
+    reputation_score: Optional[int],
+    consistency_score: Optional[int],
+    social_score: Optional[int],
+    monthly_leads: float,
+    close_rate: float,
+    avg_job_value: float,
 ) -> Optional[SupportingLeak]:
-    """Skipped entirely if LCP couldn't be measured."""
-    if lcp_seconds is None:
+    """How many more leads a complete online foundation (Google profile,
+    reviews, rankings, reputation, listings, social) could be bringing in.
+    Each issue found has an "up to" share of leads; they combine at
+    FOUNDATION_COMBINED_LOSS_WEIGHT of the sum, capped, and apply to ALL
+    current leads, since the foundation drives how many people find them at
+    all. Checks that couldn't run (None) add nothing."""
+    presence = presence or {}
+    issues = []  # (plain description, share)
+    gbp_found = presence.get("gbp_found")
+
+    if gbp_found is False:
+        issues.append(("No Google Business Profile found", FOUNDATION_LOSSES["gbp_incomplete"]))
+        issues.append(("No Google reviews", FOUNDATION_LOSSES["few_reviews"]))
+    elif gbp_found:
+        missing = []
+        if presence.get("gbp_has_hours") is False:
+            missing.append("hours")
+        if (presence.get("gbp_photo_count") or 0) < GBP_MIN_PHOTOS:
+            missing.append("photos")
+        if presence.get("gbp_has_category") is False:
+            missing.append("a business category")
+        if presence.get("gbp_has_website") is False:
+            missing.append("a website link")
+        if missing:
+            issues.append(
+                (f"Google Business Profile incomplete (missing {', '.join(missing)})", FOUNDATION_LOSSES["gbp_incomplete"])
+            )
+        rating = presence.get("rating")
+        if rating is not None and rating < 4.0:
+            issues.append((f"Google rating {rating} (below 4.0)", FOUNDATION_LOSSES["rating_below_4"]))
+        elif rating is not None and rating < 4.5:
+            issues.append((f"Google rating {rating} (below 4.5)", FOUNDATION_LOSSES["rating_below_4_5"]))
+        review_count = presence.get("review_count") or 0
+        if review_count < MIN_TRUSTED_REVIEWS:
+            issues.append((f"Only {review_count} Google reviews (fewer than 20)", FOUNDATION_LOSSES["few_reviews"]))
+
+    if local_ranking_score is not None and local_ranking_score < 9:
+        issues.append(("Not in the Google map \"3-pack\" for your main search", FOUNDATION_LOSSES["not_in_3_pack"]))
+    if reputation_score is not None and reputation_score < 6:
+        issues.append(("Weak reputation on review sites outside Google", FOUNDATION_LOSSES["weak_off_google"]))
+    if ai_visibility_score is not None and ai_visibility_score < 5:
+        issues.append(("Not recommended by AI assistants", FOUNDATION_LOSSES["not_in_ai"]))
+    if consistency_score is not None and consistency_score < 7:
+        issues.append(("Name, address, or phone inconsistent across directories", FOUNDATION_LOSSES["inconsistent_nap"]))
+    if social_score is not None and social_score < 4:
+        issues.append(("No active social media presence", FOUNDATION_LOSSES["no_social"]))
+
+    if not issues:
         return None
 
-    excess_seconds = max(0.0, lcp_seconds - LCP_BASELINE_SECONDS)
-    conversion_penalty = min(excess_seconds * LCP_CONVERSION_PENALTY_PER_SECOND, LCP_CONVERSION_PENALTY_CAP)
-    jobs = _whole_jobs(current_customers * WEBSITE_LEAD_SHARE * conversion_penalty)
+    combined = min(sum(share for _, share in issues) * FOUNDATION_COMBINED_LOSS_WEIGHT, FOUNDATION_COMBINED_CAP)
+    jobs = min(_whole_jobs(monthly_leads * combined * close_rate), FOUNDATION_JOBS_CAP)
     if jobs == 0:
         return None
     value = jobs * avg_job_value
 
+    issue_lines = [f"{description} (up to {share:.0%} more leads on its own)" for description, share in issues]
     explanation = (
-        "Based on published conversion-rate research (roughly a 7% conversion drop per "
-        "additional second of load time beyond Google's 2.5s 'good' Largest Contentful Paint "
-        "threshold, capped at 20%), applied only to the roughly half of leads assumed to come "
-        "through the website - not something measured specifically for this business. Your "
-        f"site's LCP measured {lcp_seconds:.2f}s."
+        "ESTIMATE, not measured data - gaps we found in the online foundation: "
+        + "; ".join(issue_lines)
+        + f". Together, fixing these could be bringing in up to {combined:.0%} more leads than your "
+        f"~{monthly_leads:g} a month today. The percentages come from published consumer and "
+        "local-search research (Google, BrightLocal, Whitespark) and our stated estimates. Present "
+        "the dollar figure as 'up to'"
+        + (", and the job count as '4 or more'." if jobs >= FOUNDATION_JOBS_CAP else ".")
     )
     return SupportingLeak(
-        label="Website Speed Leak", monthly_value=round(value, 2), explanation=explanation, jobs_per_month=jobs
+        label="Online Foundation Leak",
+        monthly_value=round(value, 2),
+        explanation=explanation,
+        jobs_per_month=jobs,
+        issues=[description for description, _ in issues],
+    )
+
+
+def calculate_website_conversion_leak(
+    lcp_seconds: Optional[float],
+    homepage: Optional[dict],
+    assessment: Optional[dict],
+    monthly_leads: float,
+    close_rate: float,
+    avg_job_value: float,
+) -> Optional[SupportingLeak]:
+    """Estimates how far the site falls short of an optimized site that turns
+    OPTIMIZED_CONVERSION_RATE of visitors into leads. Each problem found keeps
+    only (1 - loss) of the conversions; the losses multiply. The shortfall is
+    applied to the share of leads assumed to come through the website, capped
+    at doubling them. Anything that couldn't be checked adds no loss."""
+    homepage = homepage or {}
+    assessment = assessment or {}
+    issues = []  # (plain description, loss)
+
+    if lcp_seconds is not None:
+        for threshold, loss in LOAD_TIME_LOSSES:
+            if lcp_seconds >= threshold:
+                issues.append((f"Slow to load: {lcp_seconds:.1f} seconds on mobile", loss))
+                break
+
+    if homepage.get("responsive") is False:
+        issues.append(("Not built for phones (no mobile-responsive layout)", NOT_RESPONSIVE_LOSS))
+
+    if assessment.get("clear_cta_on_first_screen") is False:
+        issues.append(("No clear call-to-action on the first screen", NO_CLEAR_CTA_LOSS))
+
+    booking_business = bool(assessment.get("booking_or_ordering_business"))
+    main_action_wrong = assessment.get("main_action_fits_business") is False
+    expected = (assessment.get("expected_main_action") or "").lower()
+    if main_action_wrong:
+        issues.append(
+            (f"Main action for this business ({expected or 'unclear'}) is missing or buried", MAIN_ACTION_WRONG_LOSS)
+        )
+
+    goals = assessment.get("distinct_goals")
+    if isinstance(goals, int) and goals >= 3:
+        loss = COMPETING_GOAL_LOSSES[min(goals, 5)]
+        issues.append((f"{goals} competing goals on the page", loss))
+
+    total_ctas, broken_ctas = homepage.get("total_ctas") or 0, homepage.get("broken_ctas") or 0
+    if total_ctas and broken_ctas:
+        issues.append(
+            (f"{broken_ctas} of {total_ctas} call-to-action links don't work", min(broken_ctas / total_ctas, 1.0))
+        )
+
+    # When the "main action wrong" factor already covers a missing channel,
+    # that channel isn't counted a second time.
+    def covered(*words):
+        return main_action_wrong and any(word in expected for word in words)
+
+    if homepage.get("tap_to_call") is False and not covered("call"):
+        issues.append(("No tap-to-call button", NO_TAP_TO_CALL_LOSS))
+    if homepage.get("text_us") is False and not covered("text"):
+        issues.append(("No \"Text Us\" option", NO_TEXT_US_LOSS))
+    if (
+        homepage
+        and not homepage.get("online_booking")
+        and not homepage.get("online_ordering")
+        and not covered("book", "order", "schedule", "reserve")
+    ):
+        issues.append(
+            (
+                "No online booking or ordering",
+                NO_BOOKING_LOSS_BOOKING_BUSINESS if booking_business else NO_BOOKING_LOSS_OTHER,
+            )
+        )
+    if homepage.get("contact_form") is False and not covered("form", "quote", "contact"):
+        issues.append(("No contact form", NO_CONTACT_FORM_LOSS))
+
+    if not issues:
+        return None
+
+    combined_loss = min(
+        sum(loss for _, loss in issues) * WEBSITE_COMBINED_LOSS_WEIGHT, WEBSITE_COMBINED_LOSS_CAP
+    )
+    website_leads = monthly_leads * WEBSITE_LEAD_SHARE
+    jobs = min(_whole_jobs(website_leads * combined_loss * close_rate), WEBSITE_JOBS_CAP)
+    if jobs == 0:
+        return None
+    value = jobs * avg_job_value
+
+    issue_lines = [f"{description} (up to {loss:.0%} fewer leads on its own)" for description, loss in issues]
+    explanation = (
+        "ESTIMATE, not measured data - problems we found on the website: "
+        + "; ".join(issue_lines)
+        + f". Together, these could be costing up to {combined_loss:.0%} of the leads the website "
+        f"is currently bringing in (the roughly half of your ~{monthly_leads:g} monthly leads "
+        "assumed to come through the website). The load-time figures follow published research; "
+        "the other percentages are our stated estimates. Present the dollar figure as 'up to'"
+        + (", and the job count as '4 or more'." if jobs >= WEBSITE_JOBS_CAP else ".")
+    )
+    return SupportingLeak(
+        label="Website Performance Leak",
+        monthly_value=round(value, 2),
+        explanation=explanation,
+        jobs_per_month=jobs,
+        issues=[description for description, _ in issues],
     )
 
 
 def calculate_leak_estimate(
     scan_request: ScanRequest,
     review_data: dict,
-    ai_visibility_score: int,
-    local_ranking_score: int,
-    reputation_score: int,
+    ai_visibility_score: Optional[int],
+    local_ranking_score: Optional[int],
+    reputation_score: Optional[int],
     lcp_seconds: Optional[float],
+    homepage_signals: Optional[dict] = None,
+    cta_assessment: Optional[dict] = None,
+    consistency_score: Optional[int] = None,
+    social_score: Optional[int] = None,
 ) -> LeakEstimate:
     """Pure deterministic math - no AI calls. All inputs here are either
     self-reported answers or stated assumptions, so every figure this
@@ -259,21 +484,32 @@ def calculate_leak_estimate(
     # --- 3. Supporting leaks (each rounded down to whole jobs, so their sum
     # is shown as a conservative "at least" total alongside the headline) ---
     supporting_leaks = []
-    visibility_gap = calculate_visibility_gap(
-        ai_visibility_score, local_ranking_score, monthly_leads_numeric, close_rate_numeric, avg_job_value_numeric
+    # The old separate Visibility Gap and Reputation Gap estimates are folded
+    # into the Online Foundation Leak (their functions remain for reference).
+    foundation_leak = calculate_foundation_leak(
+        review_data,
+        ai_visibility_score,
+        local_ranking_score,
+        reputation_score,
+        consistency_score,
+        social_score,
+        monthly_leads_numeric,
+        close_rate_numeric,
+        avg_job_value_numeric,
     )
-    if visibility_gap is not None:
-        supporting_leaks.append(visibility_gap)
+    if foundation_leak is not None:
+        supporting_leaks.append(foundation_leak)
 
-    reputation_gap = calculate_reputation_gap(
-        reputation_score, monthly_leads_numeric, close_rate_numeric, avg_job_value_numeric
+    website_leak = calculate_website_conversion_leak(
+        lcp_seconds,
+        homepage_signals,
+        cta_assessment,
+        monthly_leads_numeric,
+        close_rate_numeric,
+        avg_job_value_numeric,
     )
-    if reputation_gap is not None:
-        supporting_leaks.append(reputation_gap)
-
-    website_speed_leak = calculate_website_speed_leak(lcp_seconds, current_customers, avg_job_value_numeric)
-    if website_speed_leak is not None:
-        supporting_leaks.append(website_speed_leak)
+    if website_leak is not None:
+        supporting_leaks.append(website_leak)
 
     # --- 4. Sanity check ---
     # Flags both if the headline number alone looks implausible, and if the

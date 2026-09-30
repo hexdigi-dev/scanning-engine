@@ -1,8 +1,8 @@
 {% extends "_layout.html" %}
-{% macro text_field(name, label, type="text", hint=None, wide=False, autocomplete=None, placeholder=None) %}
+{% macro text_field(name, label, type="text", hint=None, wide=False, autocomplete=None, placeholder=None, required=True) %}
 <div class="field{% if wide %} wide{% endif %}{% if errors.get(name) %} has-error{% endif %}">
   <label for="{{ name }}">{{ label }}</label>
-  <input id="{{ name }}" name="{{ name }}" type="{{ type }}" value="{{ values.get(name, '') }}" required
+  <input id="{{ name }}" name="{{ name }}" type="{{ type }}" value="{{ values.get(name, '') }}" {% if required %}required{% endif %}
     {% if autocomplete %}autocomplete="{{ autocomplete }}"{% endif %}
     {% if placeholder %}placeholder="{{ placeholder }}"{% endif %}
     {% if errors.get(name) %}aria-invalid="true" aria-describedby="{{ name }}-error"{% elif hint %}aria-describedby="{{ name }}-hint"{% endif %}>
@@ -10,10 +10,10 @@
   {% elif hint %}<div class="hint" id="{{ name }}-hint">{{ hint }}</div>{% endif %}
 </div>
 {% endmacro %}
-{% macro select_field(name, label, wide=False) %}
+{% macro select_field(name, label, wide=False, required=True) %}
 <div class="field{% if wide %} wide{% endif %}{% if errors.get(name) %} has-error{% endif %}">
   <label for="{{ name }}">{{ label }}</label>
-  <select id="{{ name }}" name="{{ name }}" required {% if errors.get(name) %}aria-invalid="true" aria-describedby="{{ name }}-error"{% endif %}>
+  <select id="{{ name }}" name="{{ name }}" {% if required %}required{% endif %} {% if errors.get(name) %}aria-invalid="true" aria-describedby="{{ name }}-error"{% endif %}>
     <option value="" disabled {% if values.get(name) not in options[name] %}selected{% endif %}>Choose one</option>
     {% for option in options[name] %}
     <option value="{{ option }}" {% if values.get(name) == option %}selected{% endif %}>{{ option }}</option>
@@ -41,7 +41,7 @@
       <div class="field-grid">
         {{ text_field("contact_name", "Your name", autocomplete="name", wide=True) }}
         {{ text_field("email", "Email", type="email", autocomplete="email", hint="Your results are sent here.") }}
-        {{ text_field("phone", "Phone", type="tel", autocomplete="tel") }}
+        {{ text_field("phone", "Business phone", type="tel", autocomplete="tel", hint="The number on your Google listing.") }}
       </div>
     </fieldset>
 
@@ -50,6 +50,12 @@
       <div class="field-grid">
         {{ text_field("business_name", "Business name", autocomplete="organization", hint="As it appears on Google.") }}
         {{ text_field("website_url", "Website", type="url", autocomplete="url", placeholder="yourbusiness.com") }}
+        {{ text_field("street_address", "Street address (optional)", wide=True, autocomplete="street-address", placeholder="12960 Commerce Lakes Dr", hint="Leave blank if you don't list an address publicly.", required=False) }}
+        {{ text_field("zip_code", "ZIP code", autocomplete="postal-code", placeholder="33913", hint="We'll fill in your city and state.") }}
+        <div class="field-grid field-grid-inner">
+          {{ text_field("city", "City", autocomplete="address-level2", placeholder="Fort Myers", required=False) }}
+          {{ select_field("state", "State", required=False) }}
+        </div>
         {{ text_field("business_type", "What your business does", wide=True, placeholder="Water damage restoration & mold remediation") }}
       </div>
     </fieldset>
@@ -69,6 +75,29 @@
       <label for="company_fax">Leave this empty</label>
       <input id="company_fax" name="company_fax" type="text" tabindex="-1" autocomplete="off">
     </div>
+
+    <script>
+      // Fill city and state from the ZIP. Fields stay editable, since some
+      // ZIPs cover more than one city name; a value the visitor typed
+      // themselves is never overwritten.
+      (function () {
+        var zip = document.getElementById("zip_code");
+        var city = document.getElementById("city");
+        var state = document.getElementById("state");
+        if (!zip || !city || !state) return;
+        function mark(el) { el.addEventListener("input", function () { el.dataset.typed = "1"; }); }
+        mark(city); state.addEventListener("change", function () { state.dataset.typed = "1"; });
+        zip.addEventListener("input", function () {
+          var value = zip.value.replace(/\D/g, "").slice(0, 5);
+          if (value.length !== 5) return;
+          fetch("/zip/" + value).then(function (r) { return r.ok ? r.json() : null; }).then(function (info) {
+            if (!info) return;
+            if (!city.value || !city.dataset.typed) city.value = info.city;
+            if (!state.value || !state.dataset.typed) state.value = info.state;
+          }).catch(function () {});
+        });
+      })();
+    </script>
 
     <div class="form-actions">
       <button type="submit" class="btn">Run my free scan</button>

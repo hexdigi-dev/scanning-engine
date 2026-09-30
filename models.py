@@ -13,6 +13,15 @@ class ScanRequest(BaseModel):
     business_name: str
     website_url: str
     business_type: str
+    # Business location from the form. Optional in the API so requests from
+    # before these fields existed still work. City/state are the location for
+    # the location-based checks when no Google listing matches; the street
+    # address (optional - many service-area businesses don't publish one)
+    # and ZIP also help match the Google listing and feed the consistency check.
+    street_address: str = ""
+    city: str = ""
+    state: str = ""
+    zip_code: str = ""
     monthly_leads: Literal["Under 10", "10–25", "25–50", "50–100", "100+"]
     avg_job_value: str
     response_time: Literal[
@@ -30,11 +39,28 @@ class ScanRequest(BaseModel):
         return v
 
 
+def form_location(request: "ScanRequest") -> Optional[str]:
+    """'Fort Myers, FL' from the form, or None if city/state weren't given."""
+    city, state = request.city.strip(), request.state.strip()
+    return f"{city}, {state}" if city and state else None
+
+
+def form_full_address(request: "ScanRequest") -> Optional[str]:
+    """'12960 Commerce Lakes Dr, Fort Myers, FL 33913', or None without a street."""
+    street = request.street_address.strip()
+    location = form_location(request)
+    if not street or not location:
+        return None
+    return f"{street}, {location} {request.zip_code.strip()}".strip()
+
+
 class CheckResult(BaseModel):
     check_name: str
     score: int
     summary: str
-    source_type: Literal["measured", "estimated"]
+    # "not_checked": the check couldn't run (e.g. no location), so its score
+    # means nothing and no leak is estimated from it.
+    source_type: Literal["measured", "estimated", "not_checked"]
 
     @field_validator("score")
     @classmethod
@@ -51,6 +77,9 @@ class SupportingLeak(BaseModel):
     # Whole jobs per month the value represents (0.5 = one job every two
     # months). Defaults keep reports saved before this field existed loadable.
     jobs_per_month: float = 0.0
+    # Plain-language problems behind this leak (used by the website leak to
+    # list each issue found on the report).
+    issues: List[str] = []
 
 
 class LeakEstimate(BaseModel):
@@ -79,3 +108,6 @@ class ScanResponse(BaseModel):
     leak_estimate: LeakEstimate
     report_id: Optional[str] = None
     report_url: Optional[str] = None
+    # Website check details behind the Website Performance section (load
+    # time, homepage signals, and the call-to-action assessment).
+    website_details: dict = {}

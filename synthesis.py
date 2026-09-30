@@ -98,7 +98,8 @@ singular ("I"). Explain any technical measurement in terms a business owner unde
 say how long the page takes to load rather than naming a metric like LCP). Never use internal
 labels or all-caps tags such as "ESTIMATE, not measured data" or "UPSIDE/OPPORTUNITY" - convey
 the same meaning in a normal sentence. Never copy raw error messages, status codes, or
-code-like text into a summary - if something couldn't be checked, say so plainly (e.g. "one
+code-like text into a summary - if something couldn't be checked (source_type "not_checked"),
+say so plainly in one short sentence, without guessing at a result (e.g. "one
 assistant was temporarily unavailable, so we couldn't check it"). For tone calibration only (these describe specific
 checks from our site copy - don't force a line onto a check it doesn't actually describe),
 here's the voice we write in:
@@ -110,9 +111,9 @@ fact - direct, declarative language, no hedging. Anything that comes from an est
 time it's mentioned - phrasing like "based on what you told us" or "an estimated $X" - and must
 never be stated as a confirmed fact.
 
-REPUTATION GAP RULE, applies whenever supporting_leaks includes an entry labeled "Reputation
-Gap" - this is a general rule for any business, not a one-off for whichever business happens to
-be scanned:
+REPUTATION RULE, applies whenever a supporting leak mentions reviews or reputation (the
+"Online Foundation Leak" usually does) - this is a general rule for any business, not a one-off
+for whichever business happens to be scanned:
 - Pull the negative-signal specifics (complaints, bad reviews, low platform ratings) from the
   Online Reputation Scan check's summary, but describe them at a CATEGORY level, not verbatim -
   e.g. "an unresolved complaint" or "a negative review about a specific service area," never the
@@ -121,14 +122,14 @@ be scanned:
 - Add a remedy tie-in, the same way headline_leak_monthly ties to the Speed-to-Lead bot and
   dormant_lead_value ties to Lead Revival:
   - If negative reviews appear on standard review platforms (Google, Yelp, Facebook, BBB's
-    review section, Yellow Pages, etc.), mention that our Review Bot replies to reviews that
+    review section, Yellow Pages, etc.), mention that our Reputation Builder replies to reviews that
     haven't been answered yet and sends review requests to every new client.
   - If a FORMAL BBB COMPLAINT exists - distinct from a BBB review, a separate formal process -
     explicitly call out that distinction: it requires a direct, personalized response from the
     business through BBB's own portal within a 14-day window, and can't be automated. Offer to
     help think through that response, but don't claim the bot can handle it.
 - If neither negative reviews nor a formal complaint show up in the check data (for example,
-  the problem is simply having few or no reviews outside Google), tie it to our Review Bot,
+  the problem is simply having few or no reviews outside Google), tie it to our Reputation Builder,
   which sends review requests to every new client to build up their reviews.
 
 Submit your finished work by calling the submit_report tool - that is the only output that
@@ -198,24 +199,25 @@ Tasks:
 3. supporting_leaks currently has {len(supporting_leaks_payload)} entries. Rewrite the explanation
    of every single one as a standalone 1-3 sentence explanation of that leak only, framed as an
    estimate. Treat this as a variable-length list in general - more entries may be added later,
-   and all of them need a rewrite. If one of them is labeled "Reputation Gap," follow the
-   REPUTATION GAP RULE from the system prompt in that leak's explanation - pull specifics from the
-   Online Reputation Scan check's summary above (if present among the check results), describe
-   them at a category level, and add the appropriate remedy tie-in (our Review Bot, and/or the
-   BBB-complaint-specific caveat if a formal complaint is present). A "Visibility Gap" is missed
-   opportunity (people who never found them), not customers they lost - say so plainly; its fix
-   is our Google and social profile consistency fix, which can also include registering them
-   with AI search tools. A "Website Speed Leak" is fixed by a new, faster website from us with
-   online booking. End each supporting leak with one short sentence naming its fix; never
+   and all of them need a rewrite (2-4 sentences is fine for these two). The "Online Foundation
+   Leak" is about how many MORE leads a complete online foundation could be bringing in (people
+   who never found them or passed them over), not customers they lost - say so plainly, name the
+   main gaps found, and tie it to our Foundation Fix (Google and social profile completion and
+   consistency, optionally including registration with AI search tools); where reviews or
+   reputation are among the gaps, follow the REPUTATION RULE above and also mention our
+   Reputation Builder. The "Website Performance Leak" is about the share of the leads the
+   website is CURRENTLY bringing in that its problems could be costing - name the specific
+   problems found, and tie it to a new website from us built to convert. End each supporting leak with one short sentence naming its fix; never
    mention prices (they're shown separately).
 4. Rewrite dormant_lead_explanation as a standalone 1-3 sentence explanation, framed as an
    estimate, preserving the connection to our Lead Revival campaign. It is a monthly figure: ongoing marketing
    keeps adding unconverted leads to their pool of old leads.
-   HOW TO STATE EVERY DOLLAR FIGURE: each one has already been rounded DOWN to whole jobs at the
-   business's own average job value, so present it as a floor in jobs and dollars, e.g. "at
-   least 3 jobs a month, or $7,500+". A jobs_per_month of 0.5 means "about one job every two
-   months". Use the dollar figures exactly as given; never say "up to", "roughly", or
-   "conservatively estimate", and never show cents.
+   HOW TO STATE EVERY DOLLAR FIGURE: each one is what the issue COULD be costing them, in jobs
+   and dollars at their own average job value, so present it as a maximum: "could be costing
+   you up to 3 jobs a month, or as much as $7,500". jobs_per_month is in half-job steps: 0.5
+   means "about one job every two months" and 1.5 means "about three jobs every two months".
+   Use the dollar figures exactly as given; never say "at least" or "conservatively", and
+   never show cents.
    Each of these pieces is shown in its own separate card, so none of them should repeat
    another's content.
 5. flagged_for_review is {json.dumps(leak_estimate.flagged_for_review)}. If true, set
