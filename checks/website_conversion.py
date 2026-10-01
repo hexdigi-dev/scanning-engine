@@ -13,6 +13,8 @@ Two parts:
 Anything that can't be checked is returned as None and adds no loss.
 """
 import asyncio
+import base64
+import io
 import json
 import re
 from html.parser import HTMLParser
@@ -57,7 +59,7 @@ TEXT_US_MARKERS = (
 # (textarea) or email field is a form in all but name.
 CONTACT_FORM_MARKERS = (
     "<form", "wpforms", "gform_", "contact-form", "hsforms", "jotform", "typeform",
-    "dmform", "wixui-form", "sqs-block-form", "<textarea", 'type="email"', "type='email'",
+    "dmform", "wixui-form", "sqs-block-form", "<textarea", 'type="email"', "type='email'", "type=email",
 )
 # Links worth following to find a contact form or booking tool that isn't
 # on the homepage itself (e.g. a separate Contact page).
@@ -189,6 +191,7 @@ async def check_homepage_signals(website_url: str) -> dict:
         if len(secondary_urls) >= MAX_SECONDARY_PAGES:
             break
     extra_html = ""
+    contact_text = None
     if secondary_urls:
         async with httpx.AsyncClient(timeout=LINK_CHECK_TIMEOUT, follow_redirects=True) as client:
             pages = await asyncio.gather(
@@ -197,6 +200,14 @@ async def check_homepage_signals(website_url: str) -> dict:
             )
         extra_html = " ".join(
             page.text.lower() for page in pages if isinstance(page, httpx.Response) and page.status_code == 200
+        )
+        contact_text = next(
+            (
+                _visible_text(page.text)
+                for url, page in zip(secondary_urls, pages)
+                if "contact" in url.lower() and isinstance(page, httpx.Response) and page.status_code == 200
+            ),
+            None,
         )
         print(
             "[website] extra pages read: "
@@ -219,6 +230,10 @@ async def check_homepage_signals(website_url: str) -> dict:
         "online_ordering": any(marker in all_html for marker in ORDERING_MARKERS),
         # Ad tracking tags on the site are direct evidence of paid ads.
         "ad_tags": [name for name, markers in AD_TAG_MARKERS.items() if any(m in all_html for m in markers)],
+        # Visible words on the contact page - form labels ("First Name*",
+        # "Message*") show up here even when the form itself is drawn by
+        # JavaScript.
+        "contact_page_text": contact_text,
         "contact_page_url": next((u for u in secondary_urls if "contact" in u.lower()), None)
         or (secondary_urls[0] if secondary_urls else None),
         "cta_labels": [text or href for href, text in ctas][:15],
@@ -263,9 +278,9 @@ ASSESS_TOOL = {
             },
             "contact_form_visible": {
                 "type": ["boolean", "null"],
-                "description": "In the CONTACT PAGE screenshot (if one is provided), is there a form "
+                "description": "On the CONTACT PAGE (images and/or text, if provided), is there a form "
                 "visitors can fill in (name/email/phone/message fields)? null if no contact page "
-                "screenshot was provided.",
+                "was provided.",
             },
             "notes": {"type": "string", "description": "One or two plain sentences on what you saw."},
         },
@@ -279,6 +294,42 @@ ASSESS_TOOL = {
         ],
     },
 }
+
+
+def _visible_text(html: str, limit: int = 3000) -> str:
+    text = re.sub(r"(?is)<(script|style|noscript)[^>]*>.*?</\1>", " ", html)
+    text = re.sub(r"(?s)<[^>]+>", " ", text)
+    return " ".join(text.split())[:limit]
+
+
+MAX_SLICES = 4
+
+
+def _slice_tall_screenshot(data_uri: str) -> List[str]:
+    """A full-page phone screenshot is very tall; sent whole, it gets shrunk
+    until the form is unreadable. Cut it into phone-screen-sized pieces
+    (up to MAX_SLICES) so each stays legible."""
+    try:
+        from PIL import Image
+
+        header, _, data = data_uri.partition(";base64,")
+        image = Image.open(io.BytesIO(base64.b64decode(data))).convert("RGB")
+        width, height = image.size
+        slice_height = width * 2
+        if height <= slice_height * 1.2:
+            return [data_uri]
+        slices = []
+        for top in range(0, height, slice_height):
+            if len(slices) >= MAX_SLICES:
+                break
+            piece = image.crop((0, top, width, min(top + slice_height, height)))
+            buffer = io.BytesIO()
+            piece.save(buffer, format="JPEG", quality=80)
+            slices.append("data:image/jpeg;base64," + base64.b64encode(buffer.getvalue()).decode())
+        return slices
+    except Exception as exc:
+        print(f"[website] couldn't slice screenshot: {type(exc).__name__}: {exc}")
+        return [data_uri]
 
 
 async def capture_page_screenshot(url: str) -> Optional[str]:
@@ -330,10 +381,18 @@ async def assess_calls_to_action(
     # since many site builders draw their forms with JavaScript.
     contact_url = homepage_signals.get("contact_page_url")
     contact_image = None
+    contact_text = homepage_signals.get("contact_page_text")
     if homepage_signals.get("contact_form") is False and contact_url:
-        contact_image = _image_block(await capture_page_screenshot(contact_url))
-        if contact_image:
-            content += [{"type": "text", "text": f"IMAGE 2 - their contact page ({contact_url}) on a phone:"}, contact_image]
+        shot = await capture_page_screenshot(contact_url)
+        pieces = [b for b in (_image_block(piece) for piece in (_slice_tall_screenshot(shot) if shot else [])) if b]
+        if pieces:
+            contact_image = pieces[0]
+            content.append(
+                {"type": "text", "text": f"IMAGE 2 - their contact page ({contact_url}) on a phone, top to bottom in {len(pieces)} part(s):"}
+            )
+            content += pieces
+        if contact_text:
+            content.append({"type": "text", "text": f"Visible text on their contact page: {contact_text}"})
 
     content.append(
         {
@@ -350,9 +409,11 @@ async def assess_calls_to_action(
                     else "No homepage screenshot is available, so answer null for clear_cta_on_first_screen. "
                 )
                 + (
-                    "Judge contact_form_visible from IMAGE 2. "
-                    if contact_image
-                    else "No contact page screenshot was provided, so answer null for contact_form_visible. "
+                    "Judge contact_form_visible from the contact page images and text: form field labels "
+                    "like 'Name', 'Email', 'Phone', 'Message' (often with *), or a Submit/Send button, mean "
+                    "there is a form. A page that only lists a phone number and email address does not. "
+                    if (contact_image or contact_text)
+                    else "No contact page was provided, so answer null for contact_form_visible. "
                 )
                 + "Assess it as a customer looking for this kind of business would, and submit "
                 "your assessment with the submit_assessment tool."

@@ -59,10 +59,14 @@ def _model_rejected(response: httpx.Response) -> bool:
     )
 
 
+# Grok's reasoning + web search regularly runs past 90 seconds.
+PROVIDER_TIMEOUTS = {"Grok": 140.0}
+
+
 async def _post_with_model_fallback(provider: str, models: list, send) -> ProviderResult:
     """send(client, model) -> httpx.Response. Tries each model in order."""
     last_error = "no models configured"
-    async with httpx.AsyncClient(timeout=AI_CALL_TIMEOUT) as client:
+    async with httpx.AsyncClient(timeout=PROVIDER_TIMEOUTS.get(provider, AI_CALL_TIMEOUT)) as client:
         for model in models:
             response = await send(client, model)
             if response.status_code == 200:
@@ -179,9 +183,9 @@ async def _call_gemini(prompt: str, place: dict) -> ProviderResult:
         # Google Search + Google Maps grounding: the same sources the Gemini
         # app uses for "best plumber near me" questions. Maps grounding can
         # be unavailable on some keys/plans - then fall back to Search only.
-        result = await _post_with_model_fallback(
-            "Gemini", GEMINI_MODELS, sender([{"google_search": {}}, {"google_maps": {}}])
-        )
+        # Google rejects Search + Maps together on some models, so Maps
+        # (closest to how Gemini answers "best plumber near me") goes alone.
+        result = await _post_with_model_fallback("Gemini", GEMINI_MODELS, sender([{"google_maps": {}}]))
         if not result.success and not RETRYABLE_STATUS.match(result.error or ""):
             print(f"[ai_visibility] Gemini with Maps grounding failed, retrying with Search only: {result.error}")
             result = await _post_with_model_fallback("Gemini", GEMINI_MODELS, sender([{"google_search": {}}]))

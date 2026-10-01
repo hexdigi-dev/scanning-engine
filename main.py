@@ -52,6 +52,9 @@ def _score_if_checked(check: CheckResult):
     return None if check.source_type == "not_checked" else check.score
 
 
+WEBSITE_ROW_CHECKS = 10
+
+
 def verify_api_key(api_key: str = Security(api_key_header)) -> str:
     if not api_key or not secrets.compare_digest(api_key, config.SCAN_API_KEY):
         raise HTTPException(status_code=401, detail="Missing or invalid API key")
@@ -337,6 +340,10 @@ async def scan(request: ScanRequest, http_request: Request) -> ScanResponse:
             "homepage": homepage_signals,
             "assessment": {k: v for k, v in (cta_assessment or {}).items() if k != "notes"},
         },
+        # Report checks plus the website rows (speed, mobile layout, clear
+        # call-to-action, main action, focus, working links, tap-to-call,
+        # Text Us, booking, contact form).
+        checks_run=len(synthesis_result.checks) + WEBSITE_ROW_CHECKS,
     )
 
     # Save the finished scan so it can be viewed at /report/<id>. A storage

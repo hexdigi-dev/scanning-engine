@@ -111,3 +111,5 @@ class ScanResponse(BaseModel):
     # Website check details behind the Website Performance section (load
     # time, homepage signals, and the call-to-action assessment).
     website_details: dict = {}
+    # How many checks this scan ran (for the email: "We ran N checks").
+    checks_run: int = 0
