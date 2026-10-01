@@ -15,7 +15,7 @@ from models import CheckResult, LeakEstimate, SupportingLeak
 
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_MODEL = "claude-sonnet-5-5"
-SYNTHESIS_TIMEOUT = 60.0
+SYNTHESIS_TIMEOUT = 150.0
 
 # Tone calibration only, pulled from our actual site copy - not a literal
 # template to force onto whichever check happens to come first. The third
@@ -261,15 +261,59 @@ def _fallback_result(
     explanation text (which already carries the Speed-to-Lead/Lead Revival
     ties from calculation.py), and always surfaces the failure internally
     via review_note so a human knows the output wasn't AI-polished."""
+    print(f"[synthesis] report polishing failed, using raw text: {reason}")
     note = f"AI synthesis step failed ({reason}); showing unpolished check summaries and the raw leak estimate text."
     if leak_estimate.flagged_for_review:
         note += " Additionally, flagged_for_review is True on the underlying leak estimate - please sanity check the figures before sending."
+    # The raw explanations are internal notes ("ESTIMATE, not measured
+    # data... Present the dollar figure as 'up to'"), never meant for the
+    # client - so the fallback writes plain, client-ready versions instead.
     return SynthesisResult(
         checks=list(all_check_results),
-        headline_explanation=leak_estimate.headline_explanation,
-        supporting_leaks=list(leak_estimate.supporting_leaks),
-        dormant_lead_explanation=leak_estimate.dormant_lead_explanation,
+        headline_explanation=_plain_headline(leak_estimate),
+        supporting_leaks=[
+            leak.model_copy(update={"explanation": _plain_leak(leak)}) for leak in leak_estimate.supporting_leaks
+        ],
+        dormant_lead_explanation=_plain_dormant(leak_estimate),
         review_note=note,
+    )
+
+
+def _jobs_phrase(jobs: float) -> str:
+    if jobs == 0.5:
+        return "about one job every two months"
+    if jobs == int(jobs):
+        return f"about {int(jobs)} job{'s' if jobs != 1 else ''} a month"
+    return f"about {jobs:g} jobs a month"
+
+
+def _plain_headline(estimate: LeakEstimate) -> str:
+    if not estimate.headline_leak_monthly:
+        return estimate.headline_explanation if not estimate.headline_explanation.startswith("ESTIMATE") else ""
+    return (
+        f"Based on the numbers you gave us, slow follow-up on new leads could be costing you up to "
+        f"${estimate.headline_leak_monthly:,.0f} a month ({_jobs_phrase(estimate.headline_jobs_per_month)}). "
+        "People who reach out to a business usually hire whoever answers first. Our Speed-to-Lead bot "
+        "responds to every new lead in under 60 seconds."
+    )
+
+
+def _plain_leak(leak) -> str:
+    issues = [issue for issue in (leak.issues or []) if issue]
+    found = f" The issues we found: {'; '.join(issues)}." if issues else ""
+    return (
+        f"We estimate these gaps could be costing you up to ${leak.monthly_value:,.0f} a month "
+        f"({_jobs_phrase(leak.jobs_per_month)}), based on the numbers you gave us.{found}"
+    )
+
+
+def _plain_dormant(estimate: LeakEstimate) -> str:
+    if not estimate.dormant_lead_value:
+        return ""
+    return (
+        f"Past leads who never became customers are still worth reaching out to. Reviving even a small "
+        f"share of them could add up to ${estimate.dormant_lead_value:,.0f} a month "
+        f"({_jobs_phrase(estimate.dormant_jobs_per_month)}). Our Lead Revival campaign does this for you."
     )
 
 
@@ -291,7 +335,7 @@ async def synthesize_report(
                 },
                 json={
                     "model": ANTHROPIC_MODEL,
-                    "max_tokens": 4000,
+                    "max_tokens": 8000,
                     # Newer Claude models reject a forced tool_choice, so the
                     # tool is required through the instructions instead.
                     "system": _build_system_prompt()

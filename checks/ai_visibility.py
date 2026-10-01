@@ -67,7 +67,8 @@ async def _post_with_model_fallback(provider: str, models: list, send) -> Provid
             response = await send(client, model)
             if response.status_code == 200:
                 return ProviderResult(provider, True, response.text, None, model)
-            last_error = f"HTTP {response.status_code} ({model}): {response.text[:200]}"
+            # One line, so the whole reason shows up in the logs.
+            last_error = f"HTTP {response.status_code} ({model}): {' '.join(response.text.split())[:400]}"
             if not _model_rejected(response):
                 break
     return ProviderResult(provider, False, "", last_error)

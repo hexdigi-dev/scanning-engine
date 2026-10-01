@@ -21,14 +21,16 @@ from urllib.parse import urljoin, urlparse
 
 import httpx
 
-from config import ANTHROPIC_API_KEY
+from config import ANTHROPIC_API_KEY, GOOGLE_API_KEY
 
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_MODEL = "claude-sonnet-5-5"
 PAGE_TIMEOUT = 15.0
 LINK_CHECK_TIMEOUT = 8.0
 MAX_LINKS_TO_CHECK = 8
-ASSESS_TIMEOUT = 45.0
+ASSESS_TIMEOUT = 90.0
+PAGESPEED_URL = "https://www.googleapis.com/pagespeedonline/v5/runPagespeed"
+SCREENSHOT_TIMEOUT = 90.0
 # A normal browser identity - some site builders serve bots a stripped page.
 USER_AGENT = (
     "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 "
@@ -217,6 +219,8 @@ async def check_homepage_signals(website_url: str) -> dict:
         "online_ordering": any(marker in all_html for marker in ORDERING_MARKERS),
         # Ad tracking tags on the site are direct evidence of paid ads.
         "ad_tags": [name for name, markers in AD_TAG_MARKERS.items() if any(m in all_html for m in markers)],
+        "contact_page_url": next((u for u in secondary_urls if "contact" in u.lower()), None)
+        or (secondary_urls[0] if secondary_urls else None),
         "cta_labels": [text or href for href, text in ctas][:15],
         "total_ctas": checked_ctas,
         "broken_ctas": broken,
@@ -257,6 +261,12 @@ ASSESS_TOOL = {
                 "goals include newsletter signup, shopping merchandise, job applications, following "
                 "on social media, downloading something.",
             },
+            "contact_form_visible": {
+                "type": ["boolean", "null"],
+                "description": "In the CONTACT PAGE screenshot (if one is provided), is there a form "
+                "visitors can fill in (name/email/phone/message fields)? null if no contact page "
+                "screenshot was provided.",
+            },
             "notes": {"type": "string", "description": "One or two plain sentences on what you saw."},
         },
         "required": [
@@ -271,6 +281,37 @@ ASSESS_TOOL = {
 }
 
 
+async def capture_page_screenshot(url: str) -> Optional[str]:
+    """Full-page mobile screenshot of any page via Google's speed test, as a
+    data URI (or the first-screen shot if the full page isn't returned).
+    Used for pages whose forms are drawn by JavaScript, which the plain page
+    code doesn't show. None on any failure."""
+    try:
+        async with httpx.AsyncClient(timeout=SCREENSHOT_TIMEOUT) as client:
+            response = await client.get(
+                PAGESPEED_URL,
+                params={"url": url, "key": GOOGLE_API_KEY, "category": "performance", "strategy": "mobile"},
+            )
+        if response.status_code != 200:
+            print(f"[website] screenshot of {url} failed: HTTP {response.status_code}")
+            return None
+        result = response.json().get("lighthouseResult", {})
+        full = (result.get("fullPageScreenshot") or {}).get("screenshot", {}).get("data")
+        first = result.get("audits", {}).get("final-screenshot", {}).get("details", {}).get("data")
+        return full or first
+    except Exception as exc:
+        print(f"[website] screenshot of {url} failed: {type(exc).__name__}: {exc}")
+        return None
+
+
+def _image_block(data_uri: Optional[str]) -> Optional[dict]:
+    if data_uri and data_uri.startswith("data:image/"):
+        media_type, _, data = data_uri[5:].partition(";base64,")
+        if data:
+            return {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": data}}
+    return None
+
+
 async def assess_calls_to_action(
     business_name: str,
     business_type: str,
@@ -279,11 +320,21 @@ async def assess_calls_to_action(
 ) -> dict:
     """Returns the submit_assessment fields, or {} if the assessment failed
     (nothing is then counted against the business)."""
+    homepage_signals = homepage_signals or {}
     content = []
-    if screenshot_data_uri and screenshot_data_uri.startswith("data:image/"):
-        media_type, _, data = screenshot_data_uri[5:].partition(";base64,")
-        if data:
-            content.append({"type": "image", "source": {"type": "base64", "media_type": media_type, "data": data}})
+    homepage_image = _image_block(screenshot_data_uri)
+    if homepage_image:
+        content += [{"type": "text", "text": "IMAGE 1 - the first screen of their homepage on a phone:"}, homepage_image]
+
+    # The page code missed a contact form - check the contact page visually,
+    # since many site builders draw their forms with JavaScript.
+    contact_url = homepage_signals.get("contact_page_url")
+    contact_image = None
+    if homepage_signals.get("contact_form") is False and contact_url:
+        contact_image = _image_block(await capture_page_screenshot(contact_url))
+        if contact_image:
+            content += [{"type": "text", "text": f"IMAGE 2 - their contact page ({contact_url}) on a phone:"}, contact_image]
+
     content.append(
         {
             "type": "text",
@@ -294,14 +345,23 @@ async def assess_calls_to_action(
                 f"online ordering found: {homepage_signals.get('online_ordering')}; "
                 f"tap-to-call found: {homepage_signals.get('tap_to_call')}\n\n"
                 + (
-                    "The image is the first screen of their homepage on a phone. "
-                    if len(content) > 1
-                    else "No screenshot is available, so answer null for clear_cta_on_first_screen. "
+                    "Judge clear_cta_on_first_screen from IMAGE 1. "
+                    if homepage_image
+                    else "No homepage screenshot is available, so answer null for clear_cta_on_first_screen. "
+                )
+                + (
+                    "Judge contact_form_visible from IMAGE 2. "
+                    if contact_image
+                    else "No contact page screenshot was provided, so answer null for contact_form_visible. "
                 )
                 + "Assess it as a customer looking for this kind of business would, and submit "
                 "your assessment with the submit_assessment tool."
             ),
         }
+    )
+    print(
+        f"[website] CTA assessment inputs: homepage screenshot {'yes' if homepage_image else 'NO'}, "
+        f"contact page screenshot {'yes' if contact_image else ('not needed' if homepage_signals.get('contact_form') else 'NO')}"
     )
     try:
         async with httpx.AsyncClient(timeout=ASSESS_TIMEOUT) as client:
@@ -314,7 +374,7 @@ async def assess_calls_to_action(
                 },
                 json={
                     "model": ANTHROPIC_MODEL,
-                    "max_tokens": 800,
+                    "max_tokens": 1500,
                     # Newer Claude models reject a forced tool_choice, so the
                     # tool is required through the instructions instead.
                     "system": "Respond only by calling the submit_assessment tool, exactly once.",

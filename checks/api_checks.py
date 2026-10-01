@@ -116,21 +116,45 @@ async def _fetch_pagespeed_category(
         return CheckResult(check_name=check_name, score=0, summary=summary, source_type="measured"), {}
 
 
+SPEED_TEST_RUNS = 3  # Google's speed test varies run to run; use the median
+
+
 async def check_website_health(website_url: str) -> tuple[list[CheckResult], dict]:
-    """Runs Google PageSpeed Insights performance and accessibility audits
-    as two concurrent single-category requests (smaller audits, run in
-    parallel via asyncio.gather rather than one combined call run twice as
-    slow, or sequentially) and returns two CheckResults, each scaled from
-    the API's 0-100 score to 0-10, plus a raw-data dict with "lcp_seconds"
-    (None if it couldn't be measured) for the website speed leak calc."""
-    (performance_check, performance_raw), (accessibility_check, accessibility_raw) = await asyncio.gather(
-        _fetch_pagespeed_category(website_url, "performance", "Website Health", "performance"),
+    """Runs Google PageSpeed Insights: the performance audit SPEED_TEST_RUNS
+    times in parallel (taking the run with the median load time, so the same
+    site doesn't get different dollar figures on different days) plus one
+    accessibility audit. Returns two CheckResults, each scaled 0-100 -> 0-10,
+    plus a raw-data dict with "lcp_seconds" (None if it couldn't be
+    measured), the accessibility score, and the median run's screenshot."""
+    results = await asyncio.gather(
+        *(
+            _fetch_pagespeed_category(website_url, "performance", "Website Health", "performance")
+            for _ in range(SPEED_TEST_RUNS)
+        ),
         _fetch_pagespeed_category(website_url, "accessibility", "Accessibility Basics", "accessibility"),
+    )
+    performance_runs, (accessibility_check, accessibility_raw) = results[:-1], results[-1]
+
+    measured = sorted(
+        (run for run in performance_runs if run[1].get("lcp_seconds") is not None),
+        key=lambda run: run[1]["lcp_seconds"],
+    )
+    if measured:
+        performance_check, performance_raw = measured[(len(measured) - 1) // 2]
+    else:
+        performance_check, performance_raw = performance_runs[0]
+    print(
+        f"[speed] {website_url}: load times {[run[1]['lcp_seconds'] for run in measured]}s "
+        f"-> using {performance_raw.get('lcp_seconds')}s"
+    )
+    # Fall back to any run's screenshot if the median run didn't return one.
+    screenshot = performance_raw.get("screenshot") or next(
+        (run[1].get("screenshot") for run in performance_runs if run[1].get("screenshot")), None
     )
     raw_data = {
         "lcp_seconds": performance_raw.get("lcp_seconds"),
         "accessibility_score": accessibility_raw.get("score_100"),
-        "screenshot": performance_raw.get("screenshot"),
+        "screenshot": screenshot,
     }
     return [performance_check, accessibility_check], raw_data
 

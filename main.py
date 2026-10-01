@@ -281,6 +281,11 @@ async def scan(request: ScanRequest, http_request: Request) -> ScanResponse:
         ),
     )
 
+    # A form drawn by JavaScript is invisible in the page code but visible in
+    # the contact page screenshot Claude just looked at.
+    if homepage_signals and (cta_assessment or {}).get("contact_form_visible") is True:
+        homepage_signals = {**homepage_signals, "contact_form": True}
+
     print(
         f"[scan] website signals for '{request.business_name}': screenshot "
         f"{'captured' if raw_website_data.get('screenshot') else 'MISSING'}, homepage "
