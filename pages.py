@@ -77,25 +77,48 @@ FIELD_LABELS = {
 # and prices here - the report reads them from these.
 FOUNDATION_FIX = {
     "name": "Foundation Fix",
-    "price": "$497",
-    "upgrade": "$997 with AI search (GEO/AEO) registration",
-    "detail": "Completes and aligns your Google Business Profile, directory listings, and social profiles.",
+    "starting": True,
+    # Standard price, shown crossed out, and the price when they start on the
+    # follow-up call booked from this report.
+    "was": "$1,497",
+    "price": "$997",
+    "monthly": "+ $100/mo",
+    "upgrade": "when you start on your follow-up call",
+    "detail": "Completes and aligns your Google Business Profile, directory listings, review-site "
+    "profiles, and social profiles.",
+}
+# Offered next to the Foundation Fix when AI assistants don't recommend them.
+AI_SEARCH_ADDON = {
+    "name": "AI Search Registration (AEO/GEO) add-on",
+    "starting": True,
+    "price": "$497 + $100/mo",
+    "detail": "Sets up your business information so AI assistants like ChatGPT, Gemini, and Claude "
+    "can find and recommend you.",
 }
 REPUTATION_FIX = {
     "name": "Reputation Builder",
+    "starting": True,
     "price": "$497 + $100/mo",
     "detail": "Replies to every unanswered review and sends every new client a review request.",
 }
 WEBSITE_FIX = {
     "name": "New Website",
-    "price": "$997 + $150/mo",
-    "detail": "Fast, mobile-first, with clear calls-to-action, tap-to-call, and a contact form. "
-    "Options: online booking or ordering, and a \"Text Us\" line.",
+    "starting": True,
+    "was": "$1,497",
+    "price": "$997",
+    "monthly": "+ $150/mo",
+    "upgrade": "when you start on your follow-up call",
+    "detail": "A fast, mobile-first site with one clear call-to-action, tap-to-call, a contact form, "
+    "a booking form, and local SEO setup included. Add-ons available: online ordering, a \"Text Us\" "
+    "line, extra pages, and more.",
 }
 SPEED_TO_LEAD_FIX = {
     "name": "Speed-to-Lead Bot",
-    "price": "$997 setup + $150/mo per channel",
-    "detail": "Responds to every new lead in under 60 seconds, by text, voice, and/or online form.",
+    "starting": True,
+    "price": "$497 setup + $197/mo",
+    "note": "Add AI voice answering: +$100/mo",
+    "detail": "Replies to every new web lead and missed call in under 60 seconds by text, with "
+    "optional AI voice answering.",
 }
 # Kept so reports saved with the old per-leak labels still show a fix.
 LEAK_FIXES = {"headline": SPEED_TO_LEAD_FIX}
@@ -218,6 +241,15 @@ FOUNDATION_CHECK_NAMES = [
 WEBSITE_CHECK_NAMES = ["Website Health", "Accessibility Basics"]
 
 
+def overall_score(scores: list) -> Optional[int]:
+    """Average of the checks that ran, on a 0-10 scale, rounded down. Checks
+    we couldn't run are left out rather than counted as 0. None if nothing ran."""
+    scores = [score for score in scores if score is not None]
+    if not scores:
+        return None
+    return int(sum(scores) / len(scores))
+
+
 def _website_rows(details: dict) -> list:
     """Pass/fail rows for the website checks behind the Website Performance
     Leak. status is "pass", "fail", or "unchecked"."""
@@ -274,6 +306,7 @@ def _leak_card(
     return {
         "capped": capped,
         "featured": False,
+        "bordered": False,
         "label": leak_label,
         "title": title,
         "value": value,
@@ -311,6 +344,10 @@ def render_report(request: Request, report: ScanResponse):
     needs_reputation = foundation is not None and any(
         word in issue.lower() for issue in foundation.issues for word in ("review", "rating", "reputation")
     )
+    needs_ai_search = foundation is not None and any("ai assistant" in issue.lower() for issue in foundation.issues)
+    foundation_extra_fixes = [
+        fix for fix, needed in ((REPUTATION_FIX, needs_reputation), (AI_SEARCH_ADDON, needs_ai_search)) if needed
+    ]
     website_card = (
         _leak_card(
             "Website Performance Leak",
@@ -345,9 +382,9 @@ def render_report(request: Request, report: ScanResponse):
         )
 
     for card in other_cards:
-        # Slow lead response is an "other opportunity", shown with the
-        # brighter styling like dormant leads.
-        card["featured"] = True
+        # Slow lead response: same layout as the leak cards above, with the
+        # dormant-leads orange border to mark it as an opportunity.
+        card["bordered"] = True
 
     # Hero: foundation + website leaks (measured online), plus a second line
     # for other opportunities (slow response + dormant leads).
@@ -361,6 +398,10 @@ def render_report(request: Request, report: ScanResponse):
         estimate.headline_leak_monthly + estimate.dormant_lead_value
     )
 
+    foundation_checks = [checks_by_name[name] for name in FOUNDATION_CHECK_NAMES if name in checks_by_name]
+    website_checks = [checks_by_name[name] for name in WEBSITE_CHECK_NAMES if name in checks_by_name]
+    website_rows = _website_rows(report.website_details or {})
+
     return templates.TemplateResponse(
         request,
         "report.html",
@@ -370,11 +411,20 @@ def render_report(request: Request, report: ScanResponse):
             "leak_total": leak_total,
             "opportunities_total": opportunities_total,
             "checks_run": report.checks_run or 20,
-            "foundation_checks": [checks_by_name[name] for name in FOUNDATION_CHECK_NAMES if name in checks_by_name],
+            "foundation_checks": foundation_checks,
             "foundation_card": foundation_card,
-            "reputation_fix": REPUTATION_FIX if needs_reputation else None,
-            "website_checks": [checks_by_name[name] for name in WEBSITE_CHECK_NAMES if name in checks_by_name],
-            "website_rows": _website_rows(report.website_details or {}),
+            "foundation_extra_fixes": foundation_extra_fixes,
+            "website_checks": website_checks,
+            "website_rows": website_rows,
+            "foundation_score": overall_score(
+                [c.score for c in foundation_checks if c.source_type != "not_checked"]
+            ),
+            # Pass = 10, needs work = 0, plus the Website Health and
+            # Accessibility scores as they are.
+            "website_score": overall_score(
+                [10 if row["status"] == "pass" else 0 for row in website_rows if row["status"] != "unchecked"]
+                + [c.score for c in website_checks if c.source_type != "not_checked"]
+            ),
             "website_card": website_card,
             "other_cards": other_cards,
             "ad_status": ad_status(checks_by_name.get("Visible Ad Activity")),

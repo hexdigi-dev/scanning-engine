@@ -152,15 +152,35 @@ footer{text-align:center; padding:26px 32px; font-size:12.5px; color:var(--gray-
 /* Standard leak/opportunity card header: label, big amount, jobs line.
    Leak cards are charcoal; "featured" opportunity cards are orange. */
 .leak-label{font-size:12.5px; font-weight:800; color:var(--gray-text); text-transform:uppercase; letter-spacing:0.8px;}
-.leak-amount{font-family:'Anton',Impact,sans-serif; font-size:clamp(28px,4vw,36px); line-height:1.15; color:var(--charcoal); margin:8px 0 4px;}
-.leak-jobs{font-size:12.5px; font-weight:700; color:var(--gray-text); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:18px;}
-.leak-card.featured{border:2px solid var(--orange-2); background:#FFF9F4;}
-.leak-card.featured .leak-label{color:var(--orange-2);}
-.leak-card.featured .leak-amount{
+/* Every dollar estimate carries the Pheonix gradient (yellow-orange to orange-red). */
+.leak-amount{
+  font-family:'Anton',Impact,sans-serif; font-size:clamp(28px,4vw,36px); line-height:1.15; margin:8px 0 4px;
   background:linear-gradient(90deg,var(--orange-1),var(--orange-2));
   -webkit-background-clip:text; background-clip:text; color:transparent;
 }
+.leak-jobs{font-size:12.5px; font-weight:700; color:var(--gray-text); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:18px;}
+.leak-card.featured{border:2px solid var(--orange-2); background:#FFF9F4;}
+.leak-card.featured .leak-label{color:var(--orange-2);}
 .leak-card .opt-note{margin:0 0 6px;}
 /* Hero: second line for other potential opportunities */
 .opportunity-box{display:inline-block; margin-top:18px; padding:10px 18px; border-radius:12px; background:rgba(244,144,30,0.14); border:1px solid rgba(244,144,30,0.35); color:#F4C089; font-size:15px;}
-.opportunity-box strong{color:#FFD9A8; font-weight:800;}
+.opportunity-box strong{
+  font-weight:800; background:linear-gradient(90deg,var(--orange-1),var(--orange-2));
+  -webkit-background-clip:text; background-clip:text; color:transparent;
+}
+
+/* Crossed-out standard price next to the follow-up-call price */
+.fix-was{color:var(--gray-text); font-weight:600; margin-right:4px;}
+.fix-from{display:block; font-size:11.5px; font-weight:700; color:var(--gray-text); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:2px;}
+
+/* Slow lead response: leak-card layout with the dormant-leads orange border */
+.leak-card.bordered{border:2px solid var(--orange-2);}
+/* Overall section scores */
+.overall-score{display:flex; justify-content:space-between; align-items:center; gap:16px; margin-top:18px; padding-top:18px; border-top:2px solid rgba(59,59,61,0.12);}
+.overall-label{font-size:13px; font-weight:800; text-transform:uppercase; letter-spacing:0.8px; color:var(--charcoal);}
+.overall-number{
+  font-family:'Anton',Impact,sans-serif; font-size:44px; line-height:1;
+  background:linear-gradient(90deg,var(--orange-1),var(--orange-2));
+  -webkit-background-clip:text; background-clip:text; color:transparent;
+}
+.overall-out{font-size:22px; margin-left:2px; opacity:0.7;}

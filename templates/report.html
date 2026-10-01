@@ -6,12 +6,12 @@
 {% macro fix_box(fix) %}
 <div class="fix-box">
   <span class="fix-name">Fix: {{ fix.name }}{% if fix.detail %}<span class="fix-upgrade">{{ fix.detail }}</span>{% endif %}</span>
-  <span class="fix-price">{{ fix.price }}{% if fix.upgrade %}<span class="fix-upgrade">or {{ fix.upgrade }}</span>{% endif %}</span>
+  <span class="fix-price">{% if fix.starting %}<span class="fix-from">Starting at</span>{% endif %}{% if fix.was %}<s class="fix-was">{{ fix.was }}</s> {% endif %}{{ fix.price }}{% if fix.monthly %} {{ fix.monthly }}{% endif %}{% if fix.upgrade %}<span class="fix-upgrade">{% if not fix.was %}or {% endif %}{{ fix.upgrade }}</span>{% endif %}{% if fix.note %}<span class="fix-upgrade">{{ fix.note }}</span>{% endif %}</span>
 </div>
 {% endmacro %}
 
-{% macro leak_card(card, extra_fix=None) %}
-<div class="leak-card{% if card.featured %} featured{% endif %}">
+{% macro leak_card(card, extra_fixes=[]) %}
+<div class="leak-card{% if card.featured %} featured{% endif %}{% if card.bordered %} bordered{% endif %}">
   <div class="leak-label">{{ card.title }}</div>
   <div class="leak-amount">Up to {{ card.value|money }}/mo</div>
   {% if card.featured %}<div class="opt-note">Not included in your leak total above.</div>{% endif %}
@@ -21,8 +21,17 @@
   {% endif %}
   <div class="leak-row"><div class="lbl">What it means</div><p>{{ card.explanation }}</p></div>
   {% if card.fix %}{{ fix_box(card.fix) }}{% endif %}
-  {% if extra_fix %}{{ fix_box(extra_fix) }}{% endif %}
+  {% for extra in extra_fixes %}{{ fix_box(extra) }}{% endfor %}
 </div>
+{% endmacro %}
+
+{% macro overall(label, score) %}
+{% if score is not none %}
+<div class="overall-score">
+  <span class="overall-label">{{ label }}</span>
+  <span class="overall-number">{{ score }}<span class="overall-out">/10</span></span>
+</div>
+{% endif %}
 {% endmacro %}
 
 {% macro score_list(checks) %}
@@ -60,11 +69,12 @@
 
   <div class="section-title">1. Online foundation</div>
   <div class="section-sub">How many people can find you, and trust you, before they ever reach your website.</div>
-  {% if foundation_card %}{{ leak_card(foundation_card, reputation_fix) }}
+  {% if foundation_card %}{{ leak_card(foundation_card, foundation_extra_fixes) }}
   {% else %}<div class="appendix-block"><p>No major foundation leaks found.</p></div>{% endif %}
   <div class="appendix-block">
     <h3>What we checked</h3>
     {{ score_list(foundation_checks) }}
+    {{ overall("Overall online foundation score", foundation_score) }}
   </div>
 
   <div class="section-title">2. Website performance</div>
@@ -82,6 +92,7 @@
       {% endfor %}
     </ul>
     {% if website_checks %}{{ score_list(website_checks) }}{% endif %}
+    {{ overall("Overall website performance score", website_score) }}
   </div>
 
   <div class="section-title">3. Other potential opportunities</div>
