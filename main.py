@@ -17,13 +17,12 @@ import pages
 import storage
 from checks.agent_checks import (
     check_ad_activity,
-    check_local_ranking,
     check_nap_consistency,
     check_reputation,
     check_social_presence,
 )
 from checks.ai_visibility import check_ai_visibility
-from checks.api_checks import check_google_presence, check_website_health
+from checks.api_checks import check_google_presence, check_map_pack, check_website_health
 from checks.website_conversion import assess_calls_to_action, check_homepage_signals
 from calculation import calculate_leak_estimate
 from models import CheckResult, ScanRequest, ScanResponse, form_full_address, form_location
@@ -199,7 +198,7 @@ async def scan(request: ScanRequest, http_request: Request) -> ScanResponse:
             request.business_name,
             request.website_url,
             request.phone,
-            form_location(request),
+            request.city.strip() or None,  # search is "[Business Name] [City]"
             request.street_address.strip() or None,
             request.zip_code.strip() or None,
         ),
@@ -227,10 +226,13 @@ async def scan(request: ScanRequest, http_request: Request) -> ScanResponse:
         if location
         else None
     )
-    local_ranking_coro = (
-        check_local_ranking(request.business_name, request.business_type, location)
-        if location
-        else None
+    # Measured with Google's own local search (replaces the AI web-search
+    # guess, which drove the heaviest foundation weight).
+    local_ranking_coro = check_map_pack(
+        request.business_name,
+        request.city.strip() or None,
+        raw_presence_data,
+        request.business_type,
     )
     reputation_coro = check_reputation(request.business_name, location) if location else None
     nap_consistency_coro = (

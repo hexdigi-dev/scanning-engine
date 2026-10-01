@@ -14,11 +14,19 @@ from config import GOOGLE_API_KEY
 from models import CheckResult
 
 PAGESPEED_URL = "https://www.googleapis.com/pagespeedonline/v5/runPagespeed"
-FIND_PLACE_URL = "https://maps.googleapis.com/maps/api/place/findplacefromtext/json"
-PLACE_DETAILS_URL = "https://maps.googleapis.com/maps/api/place/details/json"
-TEXT_SEARCH_URL = "https://maps.googleapis.com/maps/api/place/textsearch/json"
-# How many same-name Google listings to compare against the submitted website.
-MAX_CANDIDATES_TO_CHECK = 5
+# Places API (New). Requires "Places API (New)" enabled on the Google Cloud
+# project that owns GOOGLE_API_KEY (separate from the legacy "Places API").
+TEXT_SEARCH_NEW_URL = "https://places.googleapis.com/v1/places:searchText"
+PLACE_FIELD_MASK = ",".join(
+    "places." + field
+    for field in (
+        "id", "displayName", "websiteUri", "nationalPhoneNumber", "internationalPhoneNumber",
+        "formattedAddress", "addressComponents", "primaryType", "types", "regularOpeningHours",
+        "photos", "rating", "userRatingCount", "pureServiceAreaBusiness", "primaryTypeDisplayName",
+    )
+)
+# How many Google listings from the search to compare against the submission.
+MAX_CANDIDATES_TO_CHECK = 10
 
 REQUEST_TIMEOUT = 30.0
 PAGESPEED_TIMEOUT = 90.0  # Lighthouse audits (esp. with 2 categories) can run well past 30s
@@ -127,18 +135,20 @@ async def check_website_health(website_url: str) -> tuple[list[CheckResult], dic
     return [performance_check, accessibility_check], raw_data
 
 
-def _extract_city_state(result: dict) -> Optional[str]:
+def _extract_city_state(place: dict) -> Optional[str]:
+    """'Fort Myers, FL' from a Places API (New) result's address components.
+    Service-area businesses often hide their address, so this can be None."""
     city = None
     state = None
-    for component in result.get("address_components", []):
+    for component in place.get("addressComponents", []) or []:
         types = component.get("types", [])
         if "locality" in types:
-            city = component.get("long_name")
+            city = component.get("longText")
         if "administrative_area_level_1" in types:
-            state = component.get("short_name")
+            state = component.get("shortText")
     if city and state:
         return f"{city}, {state}"
-    return result.get("formatted_address")
+    return None
 
 
 def _site_host(url: Optional[str]) -> Optional[str]:
@@ -165,73 +175,78 @@ def _same_site(a: Optional[str], b: Optional[str]) -> bool:
     return a == b or a.endswith("." + b) or b.endswith("." + a)
 
 
-async def _find_matching_place(
-    client: httpx.AsyncClient,
+def _normalize_name(name: Optional[str]) -> str:
+    """"Paul's Plumbing, LLC" -> "pauls plumbing llc" for loose name comparison."""
+    return " ".join("".join(ch for ch in (name or "").lower() if ch.isalnum() or ch == " ").split())
+
+
+async def _search_places(
+    client: httpx.AsyncClient, query: str, page_size: int = MAX_CANDIDATES_TO_CHECK
+) -> list:
+    """Places API (New) Text Search. Unlike the legacy API, this can return
+    service-area businesses (plumbers, cleaners, mobile services) that hide
+    their street address on Google - the legacy API silently leaves them
+    out, which made real profiles look like they didn't exist."""
+    response = await client.post(
+        TEXT_SEARCH_NEW_URL,
+        headers={
+            "Content-Type": "application/json",
+            "X-Goog-Api-Key": GOOGLE_API_KEY,
+            "X-Goog-FieldMask": PLACE_FIELD_MASK,
+        },
+        json={
+            "textQuery": query,
+            "includePureServiceAreaBusinesses": True,
+            "pageSize": page_size,
+            "regionCode": "US",
+        },
+    )
+    if response.status_code != 200:
+        try:
+            reason = response.json().get("error", {}).get("message", response.text[:300])
+        except Exception:
+            reason = response.text[:300]
+        raise RuntimeError(f"Places text search failed (HTTP {response.status_code}): {reason}")
+    return response.json().get("places", []) or []
+
+
+def _pick_matching_place(
+    places: list,
     business_name: str,
     website_url: str,
-    phone: Optional[str] = None,
-    city: Optional[str] = None,
-    street_address: Optional[str] = None,
-    zip_code: Optional[str] = None,
-) -> tuple[Optional[str], int]:
-    """Many businesses share a name ("Scott's Plumbing" exists in several
-    states), so the first search result can be the wrong company. This checks
-    up to MAX_CANDIDATES_TO_CHECK same-name listings (searching with the city
-    when we have one) and returns the place_id of the one whose Google listing
-    links to the submitted website, lists the submitted phone number, OR
-    shows the submitted street address (street number + ZIP), plus how many
-    candidates were found. Returns (None, count) when none match."""
-    query = f"{business_name} {city}".strip() if city else business_name
-    search_response = await client.get(
-        TEXT_SEARCH_URL, params={"query": query, "key": GOOGLE_API_KEY}
-    )
-    search_data = search_response.json()
-    if search_response.status_code != 200 or search_data.get("status") not in ("OK", "ZERO_RESULTS"):
-        raise RuntimeError(f"Places text search failed (status: {search_data.get('status')})")
-
-    candidates = search_data.get("results", [])[:MAX_CANDIDATES_TO_CHECK]
+    phone: Optional[str],
+    street_address: Optional[str],
+    zip_code: Optional[str],
+) -> Optional[dict]:
+    """Many businesses share a name, so the first result can be the wrong
+    company. Returns the listing that links to the submitted website, lists
+    the submitted phone number, or shows the submitted street address
+    (street number + ZIP). None when nothing can be confirmed."""
     target_host = _site_host(website_url)
     target_phone = _phone_digits(phone)
     street_number = (street_address or "").strip().split(" ")[0]
     street_number = street_number if street_number.isdigit() else None
     target_zip = (zip_code or "").strip()[:5] or None
 
-    def same_address(listing_address: Optional[str]) -> bool:
-        if not (street_number and target_zip and listing_address):
-            return False
-        return listing_address.startswith(street_number + " ") and target_zip in listing_address
-
-    async def candidate_contact(place_id: str) -> tuple[Optional[str], Optional[str], Optional[str]]:
-        response = await client.get(
-            PLACE_DETAILS_URL,
-            params={
-                "place_id": place_id,
-                "fields": "website,formatted_phone_number,international_phone_number,formatted_address",
-                "key": GOOGLE_API_KEY,
-            },
+    for place in places:
+        host = _site_host(place.get("websiteUri"))
+        listing_phone = _phone_digits(
+            place.get("internationalPhoneNumber") or place.get("nationalPhoneNumber")
         )
-        result = response.json().get("result", {})
-        listing_phone = result.get("international_phone_number") or result.get("formatted_phone_number")
-        return (
-            _site_host(result.get("website")),
-            _phone_digits(listing_phone),
-            result.get("formatted_address"),
+        listing_address = place.get("formattedAddress") or ""
+        same_address = bool(
+            street_number
+            and target_zip
+            and listing_address.startswith(street_number + " ")
+            and target_zip in listing_address
         )
-
-    contacts = await asyncio.gather(
-        *(candidate_contact(c["place_id"]) for c in candidates), return_exceptions=True
-    )
-    for candidate, contact in zip(candidates, contacts):
-        if isinstance(contact, Exception):
-            continue
-        host, listing_phone, listing_address = contact
         if (
             _same_site(host, target_host)
             or (target_phone and listing_phone == target_phone)
-            or same_address(listing_address)
+            or same_address
         ):
-            return candidate["place_id"], len(candidates)
-    return None, len(candidates)
+            return place
+    return None
 
 
 async def check_google_presence(
@@ -242,190 +257,267 @@ async def check_google_presence(
     street_address: Optional[str] = None,
     zip_code: Optional[str] = None,
 ) -> tuple[list[CheckResult], dict]:
-    """Looks up the business via Places API (Find Place -> Place Details) and
-    returns two CheckResults plus a raw-data dict with review counts (needed
-    for a later calculation, e.g. Lead Revival) and a derived location (used
-    by the AI visibility check). Never raises - failures and "not found"
-    both produce score-0 CheckResults with an honest summary, and raw_data's
-    "location"/"address"/"phone" stay None so callers can detect they
-    couldn't be determined."""
+    """Searches Google for "[Business Name] [City]" (Places API (New), with
+    service-area businesses included), confirms the listing by website,
+    phone, or address, and returns two CheckResults plus a raw-data dict with
+    review counts and profile details for the leak calculations. Never
+    raises. "No profile" is only reported when Google returned nothing at
+    all for the search; any error or unconfirmed match is "Not checked",
+    which adds nothing to the leak total."""
     raw_data = {
         "review_count": 0,
         "reviews_with_owner_response": 0,
         "location": None,
         "address": None,
         "phone": None,
-        # Google profile details for the Online Foundation leak.
-        # gbp_found: True (matched), False (no listing exists), None
-        # (listings exist but none could be confirmed as this business).
+        # gbp_found: True (matched), False (Google returned no listings for
+        # the search), None (couldn't check, or couldn't confirm which one).
         "gbp_found": False,
         "gbp_has_hours": None,
         "gbp_photo_count": None,
         "gbp_has_category": None,
         "gbp_has_website": None,
         "rating": None,
+        "gbp_place_id": None,
+        # For the map-pack check: the listing's Google category ("Plumber")
+        # and where it ranked when searching its own name + city.
+        "gbp_category": None,
+        "brand_query": None,
+        "brand_rank": None,
     }
 
-    not_found_checks = [
-        CheckResult(
-            check_name="Google Business Profile",
-            score=0,
-            summary=f"No Google Business Profile found for '{business_name}'.",
-            source_type="measured",
-        ),
-        CheckResult(
-            check_name="Google Reviews",
-            score=0,
-            summary="No reviews available - business profile not found.",
-            source_type="measured",
-        ),
-    ]
+    query = f"{business_name} {city}".strip() if city else business_name
 
     try:
         async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
-            place_id, candidate_count = await _find_matching_place(
-                client, business_name, website_url, phone, city, street_address, zip_code
-            )
-            if place_id is None:
-                if candidate_count == 0:
-                    return not_found_checks, raw_data
-                # Listings with this name exist, but none link to this
-                # website - reporting on one of them would risk describing a
-                # different company.
-                raw_data["gbp_found"] = None
-                checks = [
-                    CheckResult(
-                        check_name="Google Business Profile",
-                        score=0,
-                        summary=(
-                            f"We found Google listings named '{business_name}', but none of them "
-                            f"link to {_site_host(website_url)} or show the phone number or address you "
-                            "gave us, so we couldn't confirm which one is yours. Adding your website to your Google Business Profile helps "
-                            "customers and search engines connect the two."
-                        ),
-                        source_type="not_checked",
-                    ),
-                    CheckResult(
-                        check_name="Google Reviews",
-                        score=0,
-                        summary="No reviews checked - we couldn't confirm which Google listing is yours.",
-                        source_type="not_checked",
-                    ),
-                ]
-                return checks, raw_data
-
-            details_params = {
-                "place_id": place_id,
-                "fields": "name,type,opening_hours,photo,rating,user_ratings_total,review,formatted_address,address_component,formatted_phone_number,website",
-                "key": GOOGLE_API_KEY,
-            }
-            details_response = await client.get(PLACE_DETAILS_URL, params=details_params)
-            details_data = details_response.json()
-
-            if details_response.status_code != 200 or details_data.get("status") != "OK":
-                status = details_data.get("status", f"HTTP {details_response.status_code}")
-                checks = [
-                    CheckResult(
-                        check_name="Google Business Profile",
-                        score=0,
-                        summary=f"Found a matching place but details lookup failed (status: {status}).",
-                        source_type="measured",
-                    ),
-                    CheckResult(
-                        check_name="Google Reviews",
-                        score=0,
-                        summary="No reviews available - place details lookup failed.",
-                        source_type="measured",
-                    ),
-                ]
-                return checks, raw_data
-
-            result = details_data.get("result", {})
-
-            # --- Google Business Profile ---
-            category = (result.get("types") or ["uncategorized"])[0].replace("_", " ")
-            has_hours = "opening_hours" in result
-            photo_count = len(result.get("photos", []))
-
-            profile_score = 3  # base score for being found at all
-            if has_hours:
-                profile_score += 3
-            if photo_count >= 3:
-                profile_score += 2
-            elif photo_count >= 1:
-                profile_score += 1
-            if category != "uncategorized":
-                profile_score += 2
-            profile_score = min(profile_score, 10)
-
-            profile_summary = (
-                f"Found on Google as '{result.get('name', business_name)}' "
-                f"(category: {category}, hours listed: {'yes' if has_hours else 'no'}, "
-                f"photos: {photo_count})."
-            )
-            profile_check = CheckResult(
-                check_name="Google Business Profile",
-                score=profile_score,
-                summary=profile_summary,
-                source_type="measured",
-            )
-
-            # --- Google Reviews ---
-            rating = result.get("rating")
-            review_count = result.get("user_ratings_total", 0)
-            reviews = result.get("reviews", [])
-
-            # The Places API does not currently expose owner-response data on
-            # individual reviews; this checks for it defensively so the count
-            # stays accurate if that ever changes, rather than assuming 0.
-            reviews_with_response = sum(
-                1 for r in reviews if r.get("owner_response") or r.get("author_response")
-            )
-
-            raw_data = {
-                "review_count": review_count,
-                "reviews_with_owner_response": reviews_with_response,
-                "location": _extract_city_state(result),
-                "address": result.get("formatted_address"),
-                "phone": result.get("formatted_phone_number"),
-                "gbp_found": True,
-                "gbp_has_hours": has_hours,
-                "gbp_photo_count": photo_count,
-                "gbp_has_category": category != "uncategorized",
-                "gbp_has_website": bool(result.get("website")),
-                "rating": rating,
-            }
-
-            if rating is None:
-                reviews_check = CheckResult(
-                    check_name="Google Reviews",
-                    score=0,
-                    summary="Business is listed but has no rating or reviews yet.",
-                    source_type="measured",
-                )
-            else:
-                reviews_score = min(round(rating * 2), 10)
-                reviews_summary = f"{rating}/5 average rating across {review_count} reviews."
-                reviews_check = CheckResult(
-                    check_name="Google Reviews",
-                    score=reviews_score,
-                    summary=reviews_summary,
-                    source_type="measured",
-                )
-
-            return [profile_check, reviews_check], raw_data
-
+            places = await _search_places(client, query)
     except Exception as exc:
         # An error means we couldn't check - never report it as "no profile",
         # which would invent a large foundation leak.
-        print(f"[google] presence check failed for '{business_name}': {type(exc).__name__}: {exc}")
+        print(f"[google] presence check failed for '{business_name}' (query: {query!r}): {type(exc).__name__}: {exc}")
         raw_data["gbp_found"] = None
         summary = "We couldn't reach Google to check your Business Profile this time."
-        checks = [
+        return [
             CheckResult(check_name="Google Business Profile", score=0, summary=summary, source_type="not_checked"),
             CheckResult(check_name="Google Reviews", score=0, summary=summary, source_type="not_checked"),
-        ]
-        return checks, raw_data
+        ], raw_data
+
+    place = _pick_matching_place(places, business_name, website_url, phone, street_address, zip_code)
+    print(
+        f"[google] search {query!r}: {len(places)} result(s) "
+        f"{[p.get('displayName', {}).get('text') for p in places]}; "
+        f"matched: {place.get('displayName', {}).get('text') if place else 'NONE'}"
+    )
+
+    if place is None:
+        if not places:
+            return [
+                CheckResult(
+                    check_name="Google Business Profile",
+                    score=0,
+                    summary=f"No Google Business Profile found for '{business_name}'.",
+                    source_type="measured",
+                ),
+                CheckResult(
+                    check_name="Google Reviews",
+                    score=0,
+                    summary="No reviews available - business profile not found.",
+                    source_type="measured",
+                ),
+            ], raw_data
+        # Listings came back but none could be confirmed as this business -
+        # reporting on one of them would risk describing a different company.
+        raw_data["gbp_found"] = None
+        same_name = any(
+            _normalize_name(p.get("displayName", {}).get("text")) == _normalize_name(business_name)
+            for p in places
+        )
+        return [
+            CheckResult(
+                check_name="Google Business Profile",
+                score=0,
+                summary=(
+                    f"We found Google listings{' named ' + repr(business_name) if same_name else ''}, "
+                    f"but none of them link to {_site_host(website_url)} or show the phone number or "
+                    "address you gave us, so we couldn't confirm which one is yours. Adding your website "
+                    "to your Google Business Profile helps customers and search engines connect the two."
+                ),
+                source_type="not_checked",
+            ),
+            CheckResult(
+                check_name="Google Reviews",
+                score=0,
+                summary="No reviews checked - we couldn't confirm which Google listing is yours.",
+                source_type="not_checked",
+            ),
+        ], raw_data
+
+    # --- Google Business Profile ---
+    primary_type = place.get("primaryType") or (place.get("types") or [None])[0]
+    category = (primary_type or "uncategorized").replace("_", " ")
+    has_hours = bool(place.get("regularOpeningHours"))
+    # Places API (New) returns at most 10 photos, which is plenty for a
+    # "has photos" check.
+    photo_count = len(place.get("photos", []) or [])
+    service_area_only = bool(place.get("pureServiceAreaBusiness"))
+
+    profile_score = 3  # base score for being found at all
+    if has_hours:
+        profile_score += 3
+    if photo_count >= 3:
+        profile_score += 2
+    elif photo_count >= 1:
+        profile_score += 1
+    if category != "uncategorized":
+        profile_score += 2
+    profile_score = min(profile_score, 10)
+
+    display_name = place.get("displayName", {}).get("text") or business_name
+    profile_check = CheckResult(
+        check_name="Google Business Profile",
+        score=profile_score,
+        summary=(
+            f"Found on Google as '{display_name}' "
+            f"(category: {category}, hours listed: {'yes' if has_hours else 'no'}, "
+            f"photos: {photo_count}{'+' if photo_count >= 10 else ''}"
+            f"{', service-area business' if service_area_only else ''})."
+        ),
+        source_type="measured",
+    )
+
+    # --- Google Reviews ---
+    rating = place.get("rating")
+    review_count = place.get("userRatingCount", 0) or 0
+
+    raw_data.update(
+        {
+            "review_count": review_count,
+            # The Places API doesn't expose owner replies to reviews.
+            "reviews_with_owner_response": 0,
+            "location": _extract_city_state(place),
+            # Service-area businesses hide their street address; fall back
+            # to the form's address rather than a vague "Fort Myers, FL".
+            "address": None if service_area_only else place.get("formattedAddress"),
+            "phone": place.get("nationalPhoneNumber"),
+            "gbp_found": True,
+            "gbp_has_hours": has_hours,
+            "gbp_photo_count": photo_count,
+            "gbp_has_category": category != "uncategorized",
+            "gbp_has_website": bool(place.get("websiteUri")),
+            "rating": rating,
+            "gbp_place_id": place.get("id"),
+            "gbp_category": (place.get("primaryTypeDisplayName") or {}).get("text"),
+            "brand_query": query,
+            "brand_rank": places.index(place) + 1,
+        }
+    )
+
+    if rating is None or review_count == 0:
+        reviews_check = CheckResult(
+            check_name="Google Reviews",
+            score=0,
+            summary="Business is listed but has no rating or reviews yet.",
+            source_type="measured",
+        )
+    else:
+        reviews_check = CheckResult(
+            check_name="Google Reviews",
+            score=min(round(rating * 2), 10),
+            summary=f"{rating}/5 average rating across {review_count} reviews.",
+            source_type="measured",
+        )
+
+    return [profile_check, reviews_check], raw_data
+
+MAP_PACK_SEARCH_DEPTH = 20  # Places API (New) returns at most 20 per search
+
+
+async def check_map_pack(
+    business_name: str, city: Optional[str], presence: dict, fallback_category: Optional[str]
+) -> CheckResult:
+    """Measured local-ranking check, replacing the old AI web-search guess.
+    Searches Google for "[Google category] in [City]" (e.g. "Plumber in Fort
+    Myers") - what a new customer who doesn't know the business would type -
+    and finds where the business's own listing ranks. Also reports where it
+    ranked for "[Business Name] [City]" from the profile lookup. Google's
+    live map results vary with the searcher's location, so this is a close
+    approximation of the map 3-pack, not an exact copy of it.
+
+    Scores (calculation.py counts < 9 as "not in the 3-pack"):
+    top 3 = 10; 4-10 "there but weak" = 5; 11-20 "hard to find" = 1;
+    not in the top 20 or no profile "virtually invisible" = 0."""
+    gbp_found = presence.get("gbp_found")
+    if gbp_found is None or not city:
+        return CheckResult(
+            check_name="Local Search Ranking",
+            score=0,
+            summary=(
+                "Not checked - we couldn't confirm the business's Google Business Profile, "
+                "so we couldn't look for it in the map results."
+                if city
+                else "Not checked - no city was provided."
+            ),
+            source_type="not_checked",
+        )
+
+    category = presence.get("gbp_category") or fallback_category or "business"
+    query = f"{category} in {city}"
+
+    if gbp_found is False:
+        return CheckResult(
+            check_name="Local Search Ranking",
+            score=0,
+            summary=(
+                f"Without a Google Business Profile, '{business_name}' can't appear in Google's map "
+                f"results for searches like '{query}'."
+            ),
+            source_type="measured",
+        )
+
+    try:
+        async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
+            places = await _search_places(client, query, MAP_PACK_SEARCH_DEPTH)
+    except Exception as exc:
+        print(f"[google] map-pack search failed for {query!r}: {type(exc).__name__}: {exc}")
+        return CheckResult(
+            check_name="Local Search Ranking",
+            score=0,
+            summary="Not checked - we couldn't reach Google to run the local search this time.",
+            source_type="not_checked",
+        )
+
+    place_id = presence.get("gbp_place_id")
+    rank = next((i + 1 for i, p in enumerate(places) if p.get("id") == place_id), None)
+    top_three = [p.get("displayName", {}).get("text") for p in places[:3]]
+    print(f"[google] map-pack search {query!r}: rank {rank or 'not in top ' + str(len(places))}; top 3: {top_three}")
+
+    if rank is not None and rank <= 3:
+        score, standing = 10, f"ranked #{rank} - in the top 3 map results"
+    elif rank is not None and rank <= 10:
+        score, standing = 5, (
+            f"ranked #{rank} - you're there, but weak: outside the top 3 that get most of the calls"
+        )
+    elif rank is not None:
+        score, standing = 1, f"ranked #{rank} - hard to find, well below the top 3"
+    else:
+        score, standing = 0, (
+            f"didn't appear in the top {len(places)} results - virtually invisible to new customers"
+        )
+
+    brand_query, brand_rank = presence.get("brand_query"), presence.get("brand_rank")
+    brand_part = (
+        f"Searching your name ('{brand_query}'), you ranked #{brand_rank}, so people who already "
+        "know you can find you. "
+        if brand_query and brand_rank
+        else ""
+    )
+    others = [name for name in top_three if name and _normalize_name(name) != _normalize_name(business_name)]
+    summary = (
+        f"{brand_part}Searching what a new customer would type ('{query}'), you {standing}."
+        + (f" The top 3 were: {', '.join(top_three)}." if (rank is None or rank > 3) else "")
+        + " Map results shift slightly with the searcher's location."
+    )
+    return CheckResult(check_name="Local Search Ranking", score=score, summary=summary, source_type="measured")
 
 
 if __name__ == "__main__":

@@ -115,7 +115,12 @@ FOUNDATION_LOSSES = {
     "rating_below_4": 0.50,
     "rating_below_4_5": 0.25,
     "few_reviews": 0.40,
-    "not_in_3_pack": 0.40,
+    # Map ranking for "[Google category] in [City]", in four levels:
+    # top 3 = no leak; 4-10 = on the map list but weak; 11-20 = hard to find;
+    # not in the top 20 (or no profile) = virtually invisible.
+    "map_weak": 0.15,
+    "map_hard_to_find": 0.30,
+    "map_invisible": 0.40,
     "weak_off_google": 0.20,
     "not_in_ai": 0.15,
     "inconsistent_nap": 0.10,
@@ -269,7 +274,12 @@ def calculate_foundation_leak(
             issues.append((f"Only {review_count} Google reviews (fewer than 20)", FOUNDATION_LOSSES["few_reviews"]))
 
     if local_ranking_score is not None and local_ranking_score < 9:
-        issues.append(("Not in the Google map \"3-pack\" for your main search", FOUNDATION_LOSSES["not_in_3_pack"]))
+        if local_ranking_score >= 4:
+            issues.append(("On Google's map for your main search, but weak - outside the top 3", FOUNDATION_LOSSES["map_weak"]))
+        elif local_ranking_score >= 1:
+            issues.append(("Hard to find on Google's map for your main search (ranked 11-20)", FOUNDATION_LOSSES["map_hard_to_find"]))
+        else:
+            issues.append(("Virtually invisible on Google's map for your main search", FOUNDATION_LOSSES["map_invisible"]))
     if reputation_score is not None and reputation_score < 6:
         issues.append(("Weak reputation on review sites outside Google", FOUNDATION_LOSSES["weak_off_google"]))
     if ai_visibility_score is not None and ai_visibility_score < 5:
