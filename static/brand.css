@@ -148,3 +148,19 @@ footer{text-align:center; padding:26px 32px; font-size:12.5px; color:var(--gray-
 .check-groups ul { margin: 0; padding-left: 18px; }
 .check-groups li { margin: 0 0 5px; line-height: 1.45; }
 .check-note { font-size: 13px; opacity: 0.8; margin-top: 10px; }
+
+/* Standard leak/opportunity card header: label, big amount, jobs line.
+   Leak cards are charcoal; "featured" opportunity cards are orange. */
+.leak-label{font-size:12.5px; font-weight:800; color:var(--gray-text); text-transform:uppercase; letter-spacing:0.8px;}
+.leak-amount{font-family:'Anton',Impact,sans-serif; font-size:clamp(28px,4vw,36px); line-height:1.15; color:var(--charcoal); margin:8px 0 4px;}
+.leak-jobs{font-size:12.5px; font-weight:700; color:var(--gray-text); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:18px;}
+.leak-card.featured{border:2px solid var(--orange-2); background:#FFF9F4;}
+.leak-card.featured .leak-label{color:var(--orange-2);}
+.leak-card.featured .leak-amount{
+  background:linear-gradient(90deg,var(--orange-1),var(--orange-2));
+  -webkit-background-clip:text; background-clip:text; color:transparent;
+}
+.leak-card .opt-note{margin:0 0 6px;}
+/* Hero: second line for other potential opportunities */
+.opportunity-box{display:inline-block; margin-top:18px; padding:10px 18px; border-radius:12px; background:rgba(244,144,30,0.14); border:1px solid rgba(244,144,30,0.35); color:#F4C089; font-size:15px;}
+.opportunity-box strong{color:#FFD9A8; font-weight:800;}

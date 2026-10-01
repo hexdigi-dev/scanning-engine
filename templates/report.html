@@ -11,11 +11,11 @@
 {% endmacro %}
 
 {% macro leak_card(card, extra_fix=None) %}
-<div class="leak-card">
-  <div class="leak-head">
-    <div class="leak-title">{{ card.title }}</div>
-    <div class="leak-impact">Up to {{ card.value|money }}/mo · {{ card.jobs|jobs(card.capped) }}</div>
-  </div>
+<div class="leak-card{% if card.featured %} featured{% endif %}">
+  <div class="leak-label">{{ card.title }}</div>
+  <div class="leak-amount">Up to {{ card.value|money }}/mo</div>
+  {% if card.featured %}<div class="opt-note">Not included in your leak total above.</div>{% endif %}
+  <div class="leak-jobs">{{ card.jobs|jobs(card.capped)|capitalize }}</div>
   {% if card.issues %}
   <div class="leak-row"><div class="lbl">Issues</div><ul class="issue-list">{% for issue in card.issues %}<li>{{ issue }}</li>{% endfor %}</ul></div>
   {% endif %}
@@ -43,15 +43,18 @@
     <div class="headline-inner">
       <div class="eyebrow">Scan findings</div>
       <div class="biz-name">{{ report.business_name }}</div>
-      {% if total_leak > 0 %}
+      {% if leak_total > 0 %}
       <div class="headline-sub">Up to</div>
-      <div class="headline-number">{{ total_leak|money }}/mo</div>
-      <div class="headline-sub">in leaks detected across {{ area_count }} area{{ 's' if area_count != 1 }} of your business, based on your numbers{% if estimate.avg_job_value %} and your average job value of {{ estimate.avg_job_value|money }}{% endif %}.</div>
+      <div class="headline-number">{{ leak_total|money }}/mo</div>
+      <div class="headline-sub">in foundation and website leaks found, based on your numbers{% if estimate.avg_job_value %} and your average job value of {{ estimate.avg_job_value|money }}{% endif %}.</div>
       {% else %}
       <div class="headline-number">No major leaks</div>
-      <div class="headline-sub">We didn't find gaps large enough to estimate a cost. Your full results are below.</div>
+      <div class="headline-sub">We didn't find foundation or website gaps large enough to estimate a cost. Your full results are below.</div>
       {% endif %}
-      <div class="scope-note">This scan covers your online foundation (Google, reviews, rankings, listings, social, AI search) and your website's performance.</div>
+      {% if opportunities_total > 0 %}
+      <div class="opportunity-box">{% if leak_total > 0 %}and u{% else %}U{% endif %}p to <strong>{{ opportunities_total|money }}/mo</strong> in other potential opportunities</div>
+      {% endif %}
+      <div class="scope-note">We ran {{ checks_run }} checks on your online foundation (Google, reviews, rankings, listings, social, AI search) and your website's performance.</div>
     </div>
   </div>
 
@@ -81,17 +84,17 @@
     {% if website_checks %}{{ score_list(website_checks) }}{% endif %}
   </div>
 
-  <div class="section-title">3. Other potential leaks</div>
+  <div class="section-title">3. Other potential opportunities</div>
   <div class="section-sub">Based on the answers you gave us about how you handle leads and marketing.</div>
   {% for card in other_cards %}{{ leak_card(card) }}{% endfor %}
 
   {% if estimate.dormant_lead_value > 0 %}
-  <div class="opt-card featured">
-    <div class="opt-label">Dormant leads</div>
-    <div class="opt-price"><span class="bonus-tag">Bonus opportunity:</span> Up to {{ estimate.dormant_lead_value|money }}/mo</div>
+  <div class="leak-card featured">
+    <div class="leak-label">Dormant leads</div>
+    <div class="leak-amount">Up to {{ estimate.dormant_lead_value|money }}/mo</div>
     <div class="opt-note">Not included in your leak total above.</div>
-    <div class="opt-sublabel">{% if estimate.dormant_jobs_per_month %}{{ estimate.dormant_jobs_per_month|jobs|capitalize }} revived {% endif %}from leads you already have</div>
-    <div class="opt-includes">{{ estimate.dormant_lead_explanation }}</div>
+    <div class="leak-jobs">{% if estimate.dormant_jobs_per_month %}{{ estimate.dormant_jobs_per_month|jobs|capitalize }} revived {% endif %}from leads you already have</div>
+    <div class="leak-row"><div class="lbl">What it means</div><p>{{ estimate.dormant_lead_explanation }}</p></div>
     <div class="fix-box">
       <span class="fix-name">Fix: {{ lead_revival_fix.name }}</span>
       {% if booking_url %}<a href="{{ booking_url }}" class="btn btn-small">Book a call for pricing</a>

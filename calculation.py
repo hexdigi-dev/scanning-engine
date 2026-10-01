@@ -545,6 +545,8 @@ def calculate_leak_estimate(
         headline_jobs_per_month=headline_jobs,
         dormant_jobs_per_month=dormant_jobs,
         total_leak_monthly=combined_leak_total,
+        foundation_website_leaks_monthly=round(sum(leak.monthly_value for leak in supporting_leaks), 2),
+        other_opportunities_monthly=round(headline_leak_monthly + dormant_lead_value, 2),
         avg_job_value=avg_job_value_numeric,
         close_rate=close_rate_numeric,
     )

@@ -273,6 +273,7 @@ def _leak_card(
 ):
     return {
         "capped": capped,
+        "featured": False,
         "label": leak_label,
         "title": title,
         "value": value,
@@ -343,9 +344,21 @@ def render_report(request: Request, report: ScanResponse):
             _leak_card(leak.label, leak.label, leak.monthly_value, leak.jobs_per_month, leak.explanation, leak.issues)
         )
 
-    area_count = sum(1 for card in (foundation_card, website_card) if card) + len(other_cards)
-    total_leak = estimate.total_leak_monthly or sum(
-        card["value"] for card in [foundation_card, website_card, *other_cards] if card
+    for card in other_cards:
+        # Slow lead response is an "other opportunity", shown with the
+        # brighter styling like dormant leads.
+        card["featured"] = True
+
+    # Hero: foundation + website leaks (measured online), plus a second line
+    # for other opportunities (slow response + dormant leads).
+    leak_total = estimate.foundation_website_leaks_monthly or sum(
+        card["value"] for card in (foundation_card, website_card) if card
+    )
+    # Reports saved before this split didn't store the separate figures.
+    if not estimate.foundation_website_leaks_monthly and not estimate.other_opportunities_monthly:
+        leak_total += sum(card["value"] for card in other_cards if card["label"] != "Slow lead response")
+    opportunities_total = estimate.other_opportunities_monthly or (
+        estimate.headline_leak_monthly + estimate.dormant_lead_value
     )
 
     return templates.TemplateResponse(
@@ -354,8 +367,9 @@ def render_report(request: Request, report: ScanResponse):
         {
             "report": report,
             "estimate": estimate,
-            "total_leak": total_leak,
-            "area_count": area_count,
+            "leak_total": leak_total,
+            "opportunities_total": opportunities_total,
+            "checks_run": report.checks_run or 20,
             "foundation_checks": [checks_by_name[name] for name in FOUNDATION_CHECK_NAMES if name in checks_by_name],
             "foundation_card": foundation_card,
             "reputation_fix": REPUTATION_FIX if needs_reputation else None,

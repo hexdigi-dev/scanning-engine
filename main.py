@@ -346,6 +346,8 @@ async def scan(request: ScanRequest, http_request: Request) -> ScanResponse:
         # call-to-action, main action, focus, working links, tap-to-call,
         # Text Us, booking, contact form).
         checks_run=len(synthesis_result.checks) + WEBSITE_ROW_CHECKS,
+        leaks_display=f"${leak_estimate.foundation_website_leaks_monthly:,.0f}",
+        opportunities_display=f"${leak_estimate.other_opportunities_monthly:,.0f}",
     )
 
     # Save the finished scan so it can be viewed at /report/<id>. A storage

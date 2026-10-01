@@ -141,6 +141,21 @@ def _form_labels(text: str) -> list:
     return [label for label, pattern in FORM_LABEL_PATTERNS.items() if re.search(pattern, lowered)]
 
 
+DESKTOP_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/131.0.0.0 Safari/537.36"
+)
+
+
+async def _fetch_desktop(url: str) -> Optional[str]:
+    try:
+        async with httpx.AsyncClient(timeout=PAGE_TIMEOUT, follow_redirects=True) as client:
+            response = await client.get(url, headers={"User-Agent": DESKTOP_USER_AGENT})
+        return response.text if response.status_code == 200 else None
+    except Exception:
+        return None
+
+
 async def _rendered_text(url: str) -> Optional[str]:
     headers = {"Accept": "text/plain", "X-Return-Format": "text"}
     if os.getenv("JINA_API_KEY"):
@@ -259,17 +274,32 @@ async def check_homepage_signals(website_url: str) -> dict:
         secondary_urls[0] if secondary_urls else None
     )
     if not contact_form and contact_url:
-        # Many site builders (Duda, Wix, Squarespace) draw the form with
-        # JavaScript, so it isn't in the page code. Read the page as a browser
-        # renders it and look for form field labels.
-        rendered = await _rendered_text(contact_url)
-        if rendered:
+        # Site builders (Duda, Wix, Squarespace) often serve phones a page
+        # where the form sits in a pop-up or is drawn by JavaScript, so look
+        # three ways: the phone version's text, the desktop version's code
+        # and text, and the page as a browser renders it. A form a visitor
+        # can reach any of these ways counts.
+        desktop_html, rendered = await asyncio.gather(_fetch_desktop(contact_url), _rendered_text(contact_url))
+        sources = {
+            "phone page text": contact_text or "",
+            "desktop page text": _visible_text(desktop_html, limit=20000) if desktop_html else "",
+            "rendered page": rendered or "",
+        }
+        found_in = {}
+        if desktop_html and any(marker in desktop_html.lower() for marker in CONTACT_FORM_MARKERS):
+            found_in["desktop page code"] = ["form element"]
+        for name, text in sources.items():
+            labels = _form_labels(text)
+            if len(labels) >= FORM_LABELS_NEEDED:
+                found_in[name] = labels
+        contact_form = bool(found_in)
+        if rendered and not contact_text:
             contact_text = rendered[:3000]
-        labels = _form_labels(contact_text or "")
-        contact_form = len(labels) >= FORM_LABELS_NEEDED
         print(
-            f"[website] contact page {contact_url}: rendered text {'yes' if rendered else 'NO'}, "
-            f"form labels found {labels} -> contact form {'FOUND' if contact_form else 'not found'}"
+            f"[website] contact page {contact_url}: desktop page {'read' if desktop_html else 'NOT read'}, "
+            f"rendered text {'yes' if rendered else 'NO'}; labels per source "
+            f"{ {name: _form_labels(text) for name, text in sources.items()} } -> contact form "
+            f"{'FOUND in ' + ', '.join(found_in) if contact_form else 'not found'}"
         )
 
     viewport_tags = VIEWPORT_TAG.findall(raw_html)

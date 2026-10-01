@@ -95,6 +95,10 @@ class LeakEstimate(BaseModel):
     # whole jobs. Excludes the dormant lead value, which is upside rather
     # than a leak.
     total_leak_monthly: float = 0.0
+    # Foundation + website leaks only (what the scan measured online), and
+    # the "other potential opportunities": slow lead response + dormant leads.
+    foundation_website_leaks_monthly: float = 0.0
+    other_opportunities_monthly: float = 0.0
     avg_job_value: float = 0.0
     # The self-reported close rate (range midpoint), used to price the
     # performance-based Lead Revival options.
@@ -113,3 +117,7 @@ class ScanResponse(BaseModel):
     website_details: dict = {}
     # How many checks this scan ran (for the email: "We ran N checks").
     checks_run: int = 0
+    # Ready-to-use dollar text for the email ("$10,000"), so Make needs no
+    # number formatting.
+    leaks_display: str = ""
+    opportunities_display: str = ""
