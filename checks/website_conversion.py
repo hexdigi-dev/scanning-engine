@@ -29,7 +29,11 @@ PAGE_TIMEOUT = 15.0
 LINK_CHECK_TIMEOUT = 8.0
 MAX_LINKS_TO_CHECK = 8
 ASSESS_TIMEOUT = 45.0
-USER_AGENT = "Mozilla/5.0 (compatible; FoundationScan/1.0)"
+# A normal browser identity - some site builders serve bots a stripped page.
+USER_AGENT = (
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 "
+    "(KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1"
+)
 
 BOOKING_MARKERS = (
     "calendly.com", "acuityscheduling", "housecallpro", "servicetitan", "jobber",
@@ -46,9 +50,19 @@ TEXT_US_MARKERS = (
     "podium.com", "birdeye.com", "leadconnectorhq", "msgsndr", "textus", "hatchapp",
     "text us", "text now", "send us a text",
 )
-CONTACT_FORM_MARKERS = ("<form", "wpforms", "gform_", "contact-form", "hsforms", "jotform", "typeform")
+# "<form" covers most sites; the rest catch builders that render forms
+# without a <form> tag (Duda "dmform", Wix, Squarespace) - a message box
+# (textarea) or email field is a form in all but name.
+CONTACT_FORM_MARKERS = (
+    "<form", "wpforms", "gform_", "contact-form", "hsforms", "jotform", "typeform",
+    "dmform", "wixui-form", "sqs-block-form", "<textarea", 'type="email"', "type='email'",
+)
 # Links worth following to find a contact form or booking tool that isn't
 # on the homepage itself (e.g. a separate Contact page).
+AD_TAG_MARKERS = {
+    "Google Ads": ("googleadservices.com", "gtag('config', 'aw-", 'gtag("config", "aw-', "/pagead/conversion", "'aw-", '"aw-'),
+    "Meta (Facebook/Instagram) Pixel": ("connect.facebook.net/en_us/fbevents.js", "fbq('init'", 'fbq("init"'),
+}
 SECONDARY_PAGE_WORDS = ("contact", "quote", "estimate", "schedule", "book", "appointment", "request")
 MAX_SECONDARY_PAGES = 2
 # Homepages smaller than this are usually a bot-block or redirect page.
@@ -182,6 +196,13 @@ async def check_homepage_signals(website_url: str) -> dict:
         extra_html = " ".join(
             page.text.lower() for page in pages if isinstance(page, httpx.Response) and page.status_code == 200
         )
+        print(
+            "[website] extra pages read: "
+            + ", ".join(
+                f"{url} -> {page.status_code if isinstance(page, httpx.Response) else type(page).__name__}"
+                for url, page in zip(secondary_urls, pages)
+            )
+        )
     all_html = html + " " + extra_html
 
     viewport_tags = VIEWPORT_TAG.findall(raw_html)
@@ -194,6 +215,8 @@ async def check_homepage_signals(website_url: str) -> dict:
         "contact_form": any(marker in all_html for marker in CONTACT_FORM_MARKERS),
         "online_booking": any(marker in all_html for marker in BOOKING_MARKERS),
         "online_ordering": any(marker in all_html for marker in ORDERING_MARKERS),
+        # Ad tracking tags on the site are direct evidence of paid ads.
+        "ad_tags": [name for name, markers in AD_TAG_MARKERS.items() if any(m in all_html for m in markers)],
         "cta_labels": [text or href for href, text in ctas][:15],
         "total_ctas": checked_ctas,
         "broken_ctas": broken,
@@ -292,8 +315,11 @@ async def assess_calls_to_action(
                 json={
                     "model": ANTHROPIC_MODEL,
                     "max_tokens": 800,
+                    # Newer Claude models reject a forced tool_choice, so the
+                    # tool is required through the instructions instead.
+                    "system": "Respond only by calling the submit_assessment tool, exactly once.",
                     "tools": [ASSESS_TOOL],
-                    "tool_choice": {"type": "tool", "name": ASSESS_TOOL["name"]},
+                    "tool_choice": {"type": "auto"},
                     "messages": [{"role": "user", "content": content}],
                 },
             )

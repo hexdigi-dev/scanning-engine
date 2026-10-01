@@ -1,6 +1,7 @@
 import asyncio
 import os
 import re
+from typing import Optional
 import sys
 
 # Allow running this file directly (`python checks/agent_checks.py`) as well
@@ -23,6 +24,10 @@ RESPONSE_FORMAT_INSTRUCTIONS = """
 After researching, respond in EXACTLY this format and nothing else:
 SCORE: <integer 0-10>
 SUMMARY: <one or two sentences citing what you actually found>
+
+The SUMMARY is shown to the business owner. Address them as "you"/"your business". Never
+write in the first person ("I", "my searches", "we couldn't load") and never describe your
+research process or tools - state the finding.
 """
 
 
@@ -211,38 +216,48 @@ we can't confirm consistency we can't find.
     return await _run_agent_check("Consistency, Everywhere", system_prompt, user_prompt)
 
 
-async def check_ad_activity(business_name: str) -> CheckResult:
-    system_prompt = f"""You are checking whether a business is currently running any paid ads.
-This is one of the most failure-prone checks in this system - Meta's Ad Library and Google's
-Ads Transparency Center are both JavaScript-heavy search tools that are hard to inspect via a
-plain web search, so a genuinely inconclusive result is common and expected. If you can't get
-a clear, confirmed read, say so plainly - do not report a false "no ads found" just because
-your search didn't surface anything, and do not report a false positive either.
+async def check_ad_activity(
+    business_name: str,
+    website_url: str = "",
+    location: Optional[str] = None,
+    ad_tags: Optional[list] = None,
+) -> CheckResult:
+    where = f" in {location}" if location else ""
+    if ad_tags:
+        evidence = (
+            f"DIRECT EVIDENCE: the business's own website ({website_url}) has these ad tracking tags "
+            f"installed: {', '.join(ad_tags)}. That means they run, or have run, ads on those platforms. "
+            "Treat this as strong evidence of ad activity (score at least 6) unless you find clear proof "
+            "the ads have stopped."
+        )
+    elif ad_tags is not None:
+        evidence = (
+            f"The business's website ({website_url}) has NO Google Ads or Meta (Facebook/Instagram) ad "
+            "tracking tags installed. Businesses running ads almost always install these, so this is "
+            "evidence they are not running paid ads (or are running them without tracking results)."
+        )
+    else:
+        evidence = f"Their website is {website_url}; we couldn't read it for ad tracking tags."
+    system_prompt = f"""You are checking whether a local business is currently running paid ads.
+The business is "{business_name}"{where}, website {website_url}. Other businesses share this
+name in other places - only count evidence that clearly belongs to THIS one (matching city,
+website, or phone).
 
-Try to determine whether "{business_name}" has active ads by:
-1. Searching for this business on Meta's Ad Library (facebook.com/ads/library)
-2. Searching for this business on Google's Ads Transparency Center (adstransparency.google.com)
-3. A general web search for "{business_name} ads" or "{business_name} sponsored" as a fallback
+{evidence}
+
+Also try Meta's Ad Library and Google's Ads Transparency Center for this exact business, but
+expect those tools to often be unreadable - that is normal and not itself a finding.
 
 Score 0-10:
-- 0: You found clear, confirmed evidence of NO active ads on both platforms (e.g. an explicit
-  "no ads found" / empty-results state for this exact business)
-- 3-5: You could NOT get a clear, confirmed read from either platform after a genuine search
-  effort - this reflects real uncertainty, not a confirmed absence of ads. Use this range
-  rather than 0 when you're actually unsure, since 0 should mean "confirmed no ads," not
-  "couldn't tell."
-- 6-7: Found some indication of ad activity (e.g. a search result referencing ads run by this
-  business) but could not fully confirm it's current/active
-- 8-9: Confirmed active ads currently running on one of the two platforms
-- 10: Confirmed active ads currently running on both platforms
-
-Be explicit in your summary about which case you're in - confirmed none, genuinely unknown,
-or confirmed active - so this doesn't get misread as a definitive finding when it isn't one.
+- 0-2: Confirmed or strongly indicated NOT running ads (e.g. no ad tracking tags on the site
+  and nothing found anywhere for this business)
+- 3-5: Genuinely can't tell
+- 6-7: Strong indication of ad activity (e.g. ad tracking tags installed) but not confirmed current
+- 8-10: Confirmed ads currently running
 {RESPONSE_FORMAT_INSTRUCTIONS}"""
     user_prompt = (
-        f"Check whether '{business_name}' has any active ads by searching Meta's Ad Library "
-        "(facebook.com/ads/library) and Google's Ads Transparency Center "
-        "(adstransparency.google.com), plus a general web search, and report what you find."
+        f"Is {business_name}{where} ({website_url}) running paid ads on Google or Meta right now? "
+        "Report what you find."
     )
     return await _run_agent_check("Visible Ad Activity", system_prompt, user_prompt)
 

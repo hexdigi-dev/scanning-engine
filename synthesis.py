@@ -292,9 +292,12 @@ async def synthesize_report(
                 json={
                     "model": ANTHROPIC_MODEL,
                     "max_tokens": 4000,
-                    "system": _build_system_prompt(),
+                    # Newer Claude models reject a forced tool_choice, so the
+                    # tool is required through the instructions instead.
+                    "system": _build_system_prompt()
+                    + f"\n\nRespond only by calling the {SUBMIT_TOOL['name']} tool, exactly once.",
                     "tools": [SUBMIT_TOOL],
-                    "tool_choice": {"type": "tool", "name": SUBMIT_TOOL["name"]},
+                    "tool_choice": {"type": "auto"},
                     "messages": [
                         {
                             "role": "user",

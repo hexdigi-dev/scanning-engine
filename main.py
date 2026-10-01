@@ -190,7 +190,6 @@ async def scan(request: ScanRequest, http_request: Request) -> ScanResponse:
         (website_checks, raw_website_data),
         (presence_checks, raw_presence_data),
         social_check,
-        ad_activity_check,
         homepage_signals,
     ) = await asyncio.gather(
         check_website_health(request.website_url),
@@ -203,7 +202,6 @@ async def scan(request: ScanRequest, http_request: Request) -> ScanResponse:
             request.zip_code.strip() or None,
         ),
         check_social_presence(request.business_name, request.website_url),
-        check_ad_activity(request.business_name),
         check_homepage_signals(request.website_url),
     )
 
@@ -256,6 +254,7 @@ async def scan(request: ScanRequest, http_request: Request) -> ScanResponse:
         reputation_check,
         nap_consistency_check,
         cta_assessment,
+        ad_activity_check,
     ) = await asyncio.gather(
         ai_visibility_coro
         or _skipped_check("AI Search Visibility", location_skip_summary),
@@ -270,6 +269,15 @@ async def scan(request: ScanRequest, http_request: Request) -> ScanResponse:
             request.business_type,
             raw_website_data.get("screenshot"),
             homepage_signals,
+        ),
+        # Runs after the Google lookup so it knows the city and can tell this
+        # business apart from same-name ones elsewhere; also uses the ad
+        # tracking tags found on the website as direct evidence.
+        check_ad_activity(
+            request.business_name,
+            request.website_url,
+            location,
+            (homepage_signals or {}).get("ad_tags"),
         ),
     )
 
