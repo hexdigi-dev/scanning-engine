@@ -14,7 +14,7 @@ from config import ANTHROPIC_API_KEY
 from models import CheckResult, LeakEstimate, SupportingLeak
 
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
-ANTHROPIC_MODEL = "claude-sonnet-5"
+ANTHROPIC_MODEL = "claude-sonnet-5-5"
 SYNTHESIS_TIMEOUT = 60.0
 
 # Tone calibration only, pulled from our actual site copy - not a literal

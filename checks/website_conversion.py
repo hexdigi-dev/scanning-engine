@@ -24,7 +24,7 @@ import httpx
 from config import ANTHROPIC_API_KEY
 
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
-ANTHROPIC_MODEL = "claude-sonnet-5"
+ANTHROPIC_MODEL = "claude-sonnet-5-5"
 PAGE_TIMEOUT = 15.0
 LINK_CHECK_TIMEOUT = 8.0
 MAX_LINKS_TO_CHECK = 8

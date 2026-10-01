@@ -13,7 +13,7 @@ from config import ANTHROPIC_API_KEY
 from models import CheckResult
 
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
-ANTHROPIC_MODEL = "claude-sonnet-5"
+ANTHROPIC_MODEL = "claude-sonnet-5-5"
 
 # Web search tool calls can involve several search round-trips inside a
 # single API call, so give this more room than a plain completion.

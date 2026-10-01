@@ -1,5 +1,6 @@
 import asyncio
 import difflib
+import json
 import os
 import re
 import sys
@@ -18,11 +19,20 @@ from models import CheckResult
 load_dotenv()
 
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
-OPENAI_URL = "https://api.openai.com/v1/chat/completions"
-XAI_URL = "https://api.x.ai/v1/chat/completions"
-GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent"
+OPENAI_URL = "https://api.openai.com/v1/responses"
+XAI_URL = "https://api.x.ai/v1/responses"
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
-AI_CALL_TIMEOUT = 60.0
+# Newest model first. If a provider rejects a model name (retired or not on
+# this account), the next one is tried, so a model rename never silently
+# turns the whole check into "not checked". The model actually used is logged.
+CLAUDE_MODELS = ["claude-sonnet-5-5", "claude-sonnet-5"]
+OPENAI_MODELS = ["gpt-6-astra", "gpt-5.5"]
+XAI_MODELS = ["grok-4.7", "grok-4.5"]
+GEMINI_MODELS = ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-flash-latest"]
+
+# Web search makes each answer slower than a plain chat reply.
+AI_CALL_TIMEOUT = 90.0
 
 # Linear 0-10 scale across 0-4 mentions, using standard rounding (0, 2.5, 5,
 # 7.5, 10 -> 0, 3, 5, 8, 10) rather than Python's banker's-rounding round().
@@ -35,98 +45,157 @@ class ProviderResult:
     success: bool
     text: str
     error: Optional[str]
+    model: Optional[str] = None
 
 
-async def _call_claude(prompt: str) -> ProviderResult:
+def _model_rejected(response: httpx.Response) -> bool:
+    """True when the error is about the model name, so the next model in the
+    list is worth trying."""
+    if response.status_code == 404:
+        return True
+    body = response.text.lower()
+    return response.status_code == 400 and "model" in body and (
+        "not found" in body or "does not exist" in body or "invalid" in body or "not supported" in body
+    )
+
+
+async def _post_with_model_fallback(provider: str, models: list, send) -> ProviderResult:
+    """send(client, model) -> httpx.Response. Tries each model in order."""
+    last_error = "no models configured"
+    async with httpx.AsyncClient(timeout=AI_CALL_TIMEOUT) as client:
+        for model in models:
+            response = await send(client, model)
+            if response.status_code == 200:
+                return ProviderResult(provider, True, response.text, None, model)
+            last_error = f"HTTP {response.status_code} ({model}): {response.text[:200]}"
+            if not _model_rejected(response):
+                break
+    return ProviderResult(provider, False, "", last_error)
+
+
+def _responses_api_text(data: dict) -> str:
+    """Final answer text from an OpenAI/xAI Responses API reply."""
+    if isinstance(data.get("output_text"), str):
+        return data["output_text"]
+    parts = []
+    for item in data.get("output", []) or []:
+        if item.get("type") == "message":
+            for content in item.get("content", []) or []:
+                if content.get("type") in ("output_text", "text"):
+                    parts.append(content.get("text", ""))
+    return "\n".join(parts)
+
+
+async def _call_claude(prompt: str, place: dict) -> ProviderResult:
     api_key = os.getenv("ANTHROPIC_API_KEY")
     if not api_key:
         return ProviderResult("Claude", False, "", "ANTHROPIC_API_KEY not set")
+
+    async def send(client, model):
+        tool = {"type": "web_search_20250305", "name": "web_search", "max_uses": 5}
+        if place.get("city"):
+            tool["user_location"] = {
+                "type": "approximate", "city": place["city"], "region": place.get("state") or "", "country": "US",
+            }
+        return await client.post(
+            ANTHROPIC_URL,
+            headers={"x-api-key": api_key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
+            json={
+                "model": model,
+                "max_tokens": 1500,
+                "tools": [tool],
+                "messages": [{"role": "user", "content": prompt}],
+            },
+        )
+
     try:
-        async with httpx.AsyncClient(timeout=AI_CALL_TIMEOUT) as client:
-            response = await client.post(
-                ANTHROPIC_URL,
-                headers={
-                    "x-api-key": api_key,
-                    "anthropic-version": "2023-06-01",
-                    "content-type": "application/json",
-                },
-                json={
-                    "model": "claude-sonnet-5",
-                    "max_tokens": 512,
-                    "messages": [{"role": "user", "content": prompt}],
-                },
-            )
-        if response.status_code != 200:
-            return ProviderResult("Claude", False, "", f"HTTP {response.status_code}: {response.text[:200]}")
-        data = response.json()
-        text = "".join(block.get("text", "") for block in data.get("content", []))
-        return ProviderResult("Claude", True, text, None)
+        result = await _post_with_model_fallback("Claude", CLAUDE_MODELS, send)
+        if result.success:
+            data = json.loads(result.text)
+            result.text = "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
+        return result
     except Exception as exc:
         return ProviderResult("Claude", False, "", f"{type(exc).__name__}: {exc}")
 
 
-async def _call_openai(prompt: str) -> ProviderResult:
-    api_key = os.getenv("OPENAI_API_KEY")
+async def _call_responses_api(
+    provider: str, url: str, key_env: str, models: list, prompt: str, place: dict, extra: dict
+) -> ProviderResult:
+    """OpenAI and xAI share the Responses API shape and its web_search tool."""
+    api_key = os.getenv(key_env)
     if not api_key:
-        return ProviderResult("ChatGPT", False, "", "OPENAI_API_KEY not set")
+        return ProviderResult(provider, False, "", f"{key_env} not set")
+
+    async def send(client, model):
+        tool = {"type": "web_search"}
+        if provider == "ChatGPT" and place.get("city"):
+            tool["user_location"] = {
+                "type": "approximate", "city": place["city"], "region": place.get("state") or "", "country": "US",
+            }
+        return await client.post(
+            url,
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json={"model": model, "input": prompt, "tools": [tool], **extra},
+        )
+
     try:
-        async with httpx.AsyncClient(timeout=AI_CALL_TIMEOUT) as client:
-            response = await client.post(
-                OPENAI_URL,
-                headers={"Authorization": f"Bearer {api_key}"},
-                json={
-                    "model": "gpt-4o-mini",
-                    "messages": [{"role": "user", "content": prompt}],
-                },
-            )
-        if response.status_code != 200:
-            return ProviderResult("ChatGPT", False, "", f"HTTP {response.status_code}: {response.text[:200]}")
-        data = response.json()
-        text = data["choices"][0]["message"]["content"]
-        return ProviderResult("ChatGPT", True, text, None)
+        result = await _post_with_model_fallback(provider, models, send)
+        if result.success:
+            result.text = _responses_api_text(json.loads(result.text))
+        return result
     except Exception as exc:
-        return ProviderResult("ChatGPT", False, "", f"{type(exc).__name__}: {exc}")
+        return ProviderResult(provider, False, "", f"{type(exc).__name__}: {exc}")
 
 
-async def _call_xai(prompt: str) -> ProviderResult:
-    api_key = os.getenv("XAI_API_KEY")
-    if not api_key:
-        return ProviderResult("Grok", False, "", "XAI_API_KEY not set")
-    try:
-        async with httpx.AsyncClient(timeout=AI_CALL_TIMEOUT) as client:
-            response = await client.post(
-                XAI_URL,
-                headers={"Authorization": f"Bearer {api_key}"},
-                json={
-                    "model": "grok-4",
-                    "messages": [{"role": "user", "content": prompt}],
-                },
-            )
-        if response.status_code != 200:
-            return ProviderResult("Grok", False, "", f"HTTP {response.status_code}: {response.text[:200]}")
-        data = response.json()
-        text = data["choices"][0]["message"]["content"]
-        return ProviderResult("Grok", True, text, None)
-    except Exception as exc:
-        return ProviderResult("Grok", False, "", f"{type(exc).__name__}: {exc}")
+async def _call_openai(prompt: str, place: dict) -> ProviderResult:
+    # "required" makes it actually search, the way ChatGPT does for local
+    # recommendations, instead of answering from memory.
+    return await _call_responses_api(
+        "ChatGPT", OPENAI_URL, "OPENAI_API_KEY", OPENAI_MODELS, prompt, place,
+        {"tool_choice": "required", "reasoning": {"effort": "low"}},
+    )
 
 
-async def _call_gemini(prompt: str) -> ProviderResult:
+async def _call_xai(prompt: str, place: dict) -> ProviderResult:
+    return await _call_responses_api("Grok", XAI_URL, "XAI_API_KEY", XAI_MODELS, prompt, place, {})
+
+
+async def _call_gemini(prompt: str, place: dict) -> ProviderResult:
     api_key = os.getenv("GOOGLE_AI_API_KEY")
     if not api_key:
         return ProviderResult("Gemini", False, "", "GOOGLE_AI_API_KEY not set")
-    try:
-        async with httpx.AsyncClient(timeout=AI_CALL_TIMEOUT) as client:
-            response = await client.post(
-                GEMINI_URL,
-                params={"key": api_key},
-                json={"contents": [{"parts": [{"text": prompt}]}]},
+
+    def sender(tools):
+        async def send(client, model):
+            return await client.post(
+                GEMINI_URL.format(model=model),
+                headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
+                json={"contents": [{"role": "user", "parts": [{"text": prompt}]}], "tools": tools},
             )
-        if response.status_code != 200:
-            return ProviderResult("Gemini", False, "", f"HTTP {response.status_code}: {response.text[:200]}")
-        data = response.json()
-        text = data["candidates"][0]["content"]["parts"][0]["text"]
-        return ProviderResult("Gemini", True, text, None)
+        return send
+
+    try:
+        # Google Search + Google Maps grounding: the same sources the Gemini
+        # app uses for "best plumber near me" questions. Maps grounding can
+        # be unavailable on some keys/plans - then fall back to Search only.
+        result = await _post_with_model_fallback(
+            "Gemini", GEMINI_MODELS, sender([{"google_search": {}}, {"google_maps": {}}])
+        )
+        if not result.success and not RETRYABLE_STATUS.match(result.error or ""):
+            print(f"[ai_visibility] Gemini with Maps grounding failed, retrying with Search only: {result.error}")
+            result = await _post_with_model_fallback("Gemini", GEMINI_MODELS, sender([{"google_search": {}}]))
+        if result.success:
+            data = json.loads(result.text)
+            candidate = (data.get("candidates") or [{}])[0]
+            texts = [p.get("text", "") for p in candidate.get("content", {}).get("parts", []) or []]
+            # Business names from the Maps/web sources it grounded on count too.
+            for chunk in candidate.get("groundingMetadata", {}).get("groundingChunks", []) or []:
+                for kind in ("maps", "web"):
+                    title = (chunk.get(kind) or {}).get("title")
+                    if title:
+                        texts.append(title)
+            result.text = "\n".join(texts)
+        return result
     except Exception as exc:
         return ProviderResult("Gemini", False, "", f"{type(exc).__name__}: {exc}")
 
@@ -137,13 +206,13 @@ RETRYABLE_STATUS = re.compile(r"^HTTP (429|500|502|503|504|529)\b")
 RETRY_DELAY_SECONDS = 3.0
 
 
-async def _call_with_retry(call, prompt: str) -> ProviderResult:
+async def _call_with_retry(call, prompt: str, place: dict) -> ProviderResult:
     """One quick retry when a provider says it's overloaded. Timeouts are not
     retried - they already took AI_CALL_TIMEOUT seconds."""
-    result = await call(prompt)
+    result = await call(prompt, place)
     if not result.success and RETRYABLE_STATUS.match(result.error or ""):
         await asyncio.sleep(RETRY_DELAY_SECONDS)
-        result = await call(prompt)
+        result = await call(prompt, place)
     return result
 
 
@@ -151,7 +220,7 @@ def _plain_failure_reason(error: Optional[str]) -> str:
     """Turns a raw provider error into wording that's safe to show a client.
     The raw error still goes to the logs."""
     error = error or ""
-    if RETRYABLE_STATUS.match(error):
+    if RETRYABLE_STATUS.match(error.split(" (")[0]):
         return "temporarily unavailable"
     if "not set" in error:
         return "not configured"
@@ -177,17 +246,31 @@ def _business_mentioned(text: str, business_name: str) -> bool:
 
 
 async def check_ai_visibility(business_name: str, category: str, location: str) -> CheckResult:
-    """Asks Claude, ChatGPT, Grok, and Gemini the same question in parallel
-    and checks whether business_name appears in each response. Each
-    provider call handles its own failures - one provider erroring never
-    prevents scoring the other three. Never raises."""
-    prompt = f"What are the best {category} options near {location}? List a few real business names."
+    """Asks Claude, ChatGPT, Grok, and Gemini - each with live web search on,
+    the way their consumer apps answer local questions - what a new customer
+    would ask, and checks whether business_name appears in each answer.
+    category should be the Google category ("Plumber") when known. Each
+    provider handles its own failures. Never raises."""
+    city, _, state = (location or "").partition(",")
+    place = {"city": city.strip() or None, "state": state.strip() or None}
+    prompt = (
+        f"I need a {category.lower()} in {location}. Who are the best ones to call? "
+        "Give me a few specific local business names."
+    )
 
     results = await asyncio.gather(
-        _call_with_retry(_call_claude, prompt),
-        _call_with_retry(_call_openai, prompt),
-        _call_with_retry(_call_xai, prompt),
-        _call_with_retry(_call_gemini, prompt),
+        _call_with_retry(_call_claude, prompt, place),
+        _call_with_retry(_call_openai, prompt, place),
+        _call_with_retry(_call_xai, prompt, place),
+        _call_with_retry(_call_gemini, prompt, place),
+    )
+    print(
+        "[ai_visibility] "
+        + "; ".join(
+            f"{r.provider}: {r.model or 'FAILED'}"
+            + (f" -> {'mentioned' if _business_mentioned(r.text, business_name) else 'not mentioned'}" if r.success else "")
+            for r in results
+        )
     )
 
     mentioned, not_mentioned, failed = [], [], []

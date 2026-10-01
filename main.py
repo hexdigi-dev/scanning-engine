@@ -210,6 +210,13 @@ async def scan(request: ScanRequest, http_request: Request) -> ScanResponse:
     # Prefer what the matched Google listing says; fall back to the form.
     location = raw_presence_data.get("location") or form_location(request)
     address = raw_presence_data.get("address") or form_full_address(request)
+    if not address and raw_presence_data.get("gbp_found") and location:
+        # Service-area businesses (most trades) hide their street address on
+        # Google, so compare name and phone, which is what customers see.
+        address = (
+            f"No public street address - a service-area business serving {location}. "
+            "Compare name and phone only; don't count a missing address as a mismatch."
+        )
     phone = raw_presence_data.get("phone") or (request.phone.strip() or None)
 
     location_skip_summary = (
@@ -222,7 +229,11 @@ async def scan(request: ScanRequest, http_request: Request) -> ScanResponse:
     )
 
     ai_visibility_coro = (
-        check_ai_visibility(request.business_name, request.business_type, location)
+        check_ai_visibility(
+            request.business_name,
+            raw_presence_data.get("gbp_category") or request.business_type,
+            location,
+        )
         if location
         else None
     )
