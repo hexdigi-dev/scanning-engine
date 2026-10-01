@@ -66,11 +66,14 @@ async def _run_agent_check(check_name: str, system_prompt: str, user_prompt: str
             )
 
         if response.status_code != 200:
+            # Our side failed (credits, outage) - never show the raw error to
+            # the client or count it against the business.
+            print(f"[agent] {check_name} failed: HTTP {response.status_code}: {' '.join(response.text.split())[:300]}")
             return CheckResult(
                 check_name=check_name,
                 score=0,
-                summary=f"{check_name} check failed (HTTP {response.status_code}): {response.text[:200]}",
-                source_type="measured",
+                summary="We couldn't complete this check this time.",
+                source_type="not_checked",
             )
 
         data = response.json()
@@ -92,12 +95,13 @@ async def _run_agent_check(check_name: str, system_prompt: str, user_prompt: str
         return CheckResult(check_name=check_name, score=score, summary=summary, source_type="measured")
 
     except Exception as exc:
-        summary = (
-            f"{check_name} check failed: {type(exc).__name__}: {exc}"
-            if str(exc)
-            else f"{check_name} check failed: {type(exc).__name__}"
+        print(f"[agent] {check_name} failed: {type(exc).__name__}: {exc}")
+        return CheckResult(
+            check_name=check_name,
+            score=0,
+            summary="We couldn't complete this check this time.",
+            source_type="not_checked",
         )
-        return CheckResult(check_name=check_name, score=0, summary=summary, source_type="measured")
 
 
 async def check_local_ranking(business_name: str, category: str, location: str) -> CheckResult:

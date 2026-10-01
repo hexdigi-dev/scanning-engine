@@ -121,3 +121,7 @@ class ScanResponse(BaseModel):
     # number formatting.
     leaks_display: str = ""
     opportunities_display: str = ""
+    # For the internal email: what didn't work on this scan. When too much
+    # failed, hold_client_email tells Make not to send the client email.
+    internal_alerts: List[str] = []
+    hold_client_email: bool = False

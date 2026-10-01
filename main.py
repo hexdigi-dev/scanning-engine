@@ -53,6 +53,8 @@ def _score_if_checked(check: CheckResult):
 
 
 WEBSITE_ROW_CHECKS = 10
+# Hold the client email when this many checks couldn't run.
+HOLD_IF_UNCHECKED = 3
 
 
 def verify_api_key(api_key: str = Security(api_key_header)) -> str:
@@ -321,6 +323,19 @@ async def scan(request: ScanRequest, http_request: Request) -> ScanResponse:
     )
 
     synthesis_result = await synthesize_report(request.business_name, all_checks, leak_estimate)
+
+    # Anything that didn't run, for the internal email. Too many gaps (or an
+    # unpolished report) and the client email is held for a human.
+    unchecked = [c.check_name for c in all_checks if c.source_type == "not_checked"]
+    internal_alerts = [f"Not checked: {name}" for name in unchecked]
+    if not cta_assessment:
+        internal_alerts.append("Website call-to-action assessment didn't run")
+    polish_failed = bool(synthesis_result.review_note and "synthesis step failed" in synthesis_result.review_note)
+    if polish_failed:
+        internal_alerts.append("Report text wasn't AI-polished (plain fallback text used)")
+    hold_client_email = len(unchecked) >= HOLD_IF_UNCHECKED or polish_failed
+    if internal_alerts:
+        print(f"[scan] alerts for '{request.business_name}' (hold client email: {hold_client_email}): {internal_alerts}")
     if synthesis_result.review_note:
         print(f"[scan] REVIEW NEEDED for '{request.business_name}': {synthesis_result.review_note}")
 
@@ -346,6 +361,8 @@ async def scan(request: ScanRequest, http_request: Request) -> ScanResponse:
         # call-to-action, main action, focus, working links, tap-to-call,
         # Text Us, booking, contact form).
         checks_run=len(synthesis_result.checks) + WEBSITE_ROW_CHECKS,
+        internal_alerts=internal_alerts,
+        hold_client_email=hold_client_email,
         leaks_display=f"${leak_estimate.foundation_website_leaks_monthly:,.0f}",
         opportunities_display=f"${leak_estimate.other_opportunities_monthly:,.0f}",
     )
