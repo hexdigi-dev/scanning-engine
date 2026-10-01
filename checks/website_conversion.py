@@ -14,6 +14,7 @@ Anything that can't be checked is returned as None and adds no loss.
 """
 import asyncio
 import base64
+import os
 import io
 import json
 import re
@@ -121,6 +122,41 @@ async def _link_works(client: httpx.AsyncClient, url: str) -> bool:
         return False
 
 
+# Rendered-page reader: returns a page's text as a browser shows it, after
+# JavaScript runs. JINA_API_KEY (optional) raises the free rate limit.
+READER_URL = "https://r.jina.ai/"
+READER_TIMEOUT = 40.0
+FORM_LABEL_PATTERNS = {
+    "first name": r"first name", "last name": r"last name", "full name": r"full name",
+    "your name": r"your name", "name*": r"\bname\s*\*", "email*": r"\be-?mail\s*\*",
+    "email address": r"email address", "phone*": r"\bphone\s*\*", "phone number": r"phone number",
+    "message*": r"\bmessage\s*\*", "your message": r"your message", "how can we help": r"how can we help",
+    "submit": r"\bsubmit\b", "send message": r"send message",
+}
+FORM_LABELS_NEEDED = 3
+
+
+def _form_labels(text: str) -> list:
+    lowered = text.lower()
+    return [label for label, pattern in FORM_LABEL_PATTERNS.items() if re.search(pattern, lowered)]
+
+
+async def _rendered_text(url: str) -> Optional[str]:
+    headers = {"Accept": "text/plain", "X-Return-Format": "text"}
+    if os.getenv("JINA_API_KEY"):
+        headers["Authorization"] = f"Bearer {os.getenv('JINA_API_KEY')}"
+    try:
+        async with httpx.AsyncClient(timeout=READER_TIMEOUT) as client:
+            response = await client.get(READER_URL + url, headers=headers)
+        if response.status_code != 200:
+            print(f"[website] rendered read of {url} failed: HTTP {response.status_code}: {' '.join(response.text.split())[:200]}")
+            return None
+        return " ".join(response.text.split())
+    except Exception as exc:
+        print(f"[website] rendered read of {url} failed: {type(exc).__name__}: {exc}")
+        return None
+
+
 async def check_homepage_signals(website_url: str) -> dict:
     """Returns a dict of booleans/counts (see keys below), or {} if the
     homepage couldn't be fetched - in which case nothing is counted against
@@ -218,6 +254,24 @@ async def check_homepage_signals(website_url: str) -> dict:
         )
     all_html = html + " " + extra_html
 
+    contact_form = any(marker in all_html for marker in CONTACT_FORM_MARKERS)
+    contact_url = next((u for u in secondary_urls if "contact" in u.lower()), None) or (
+        secondary_urls[0] if secondary_urls else None
+    )
+    if not contact_form and contact_url:
+        # Many site builders (Duda, Wix, Squarespace) draw the form with
+        # JavaScript, so it isn't in the page code. Read the page as a browser
+        # renders it and look for form field labels.
+        rendered = await _rendered_text(contact_url)
+        if rendered:
+            contact_text = rendered[:3000]
+        labels = _form_labels(contact_text or "")
+        contact_form = len(labels) >= FORM_LABELS_NEEDED
+        print(
+            f"[website] contact page {contact_url}: rendered text {'yes' if rendered else 'NO'}, "
+            f"form labels found {labels} -> contact form {'FOUND' if contact_form else 'not found'}"
+        )
+
     viewport_tags = VIEWPORT_TAG.findall(raw_html)
     responsive = any("device-width" in tag.lower() or "initial-scale" in tag.lower() for tag in viewport_tags)
 
@@ -225,7 +279,7 @@ async def check_homepage_signals(website_url: str) -> dict:
         "responsive": responsive,
         "tap_to_call": "href=\"tel:" in html or "href='tel:" in html or "href=tel:" in html,
         "text_us": "href=\"sms:" in all_html or "href='sms:" in all_html or any(m in all_html for m in TEXT_US_MARKERS),
-        "contact_form": any(marker in all_html for marker in CONTACT_FORM_MARKERS),
+        "contact_form": contact_form,
         "online_booking": any(marker in all_html for marker in BOOKING_MARKERS),
         "online_ordering": any(marker in all_html for marker in ORDERING_MARKERS),
         # Ad tracking tags on the site are direct evidence of paid ads.

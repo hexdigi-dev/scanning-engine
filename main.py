@@ -289,6 +289,8 @@ async def scan(request: ScanRequest, http_request: Request) -> ScanResponse:
     if homepage_signals and (cta_assessment or {}).get("contact_form_visible") is True:
         homepage_signals = {**homepage_signals, "contact_form": True}
 
+    if (cta_assessment or {}).get("notes"):
+        print(f"[website] Claude's notes on the page: {cta_assessment['notes']}")
     print(
         f"[scan] website signals for '{request.business_name}': screenshot "
         f"{'captured' if raw_website_data.get('screenshot') else 'MISSING'}, homepage "

@@ -107,9 +107,52 @@
 
   <div class="section-title">How this scan works</div>
   <div class="appendix-block">
-    <h3>What we reviewed</h3>
-    <p>We looked up your Google Business Profile and reviews, searched review sites, social media, business directories, local search results, and AI assistants for {{ report.business_name }}, and tested your website's speed, mobile layout, accessibility, and calls-to-action.</p>
-    <p>Scores come from what we found directly. Dollar figures are estimates of what each issue could be costing you, built from the answers you gave on the scan form and published industry research, not from your actual sales data.</p>
+    <h3>The {{ report.checks_run or 20 }} checks we ran</h3>
+    <div class="check-groups">
+      <div>
+        <h4>Online foundation</h4>
+        <ul>
+          <li>Google Business Profile completeness</li>
+          <li>Google rating and review count</li>
+          <li>Reputation on other review sites (Yelp, Angi, BBB and others)</li>
+          <li>Social media presence</li>
+          <li>AI assistant recommendations (Claude, ChatGPT, Grok and Gemini, each searching the web live)</li>
+          <li>Google map ranking, for your name and for what a new customer would search</li>
+          <li>Name and phone consistency across directories</li>
+        </ul>
+      </div>
+      <div>
+        <h4>Website</h4>
+        <ul>
+          <li>Mobile load speed (middle result of 3 Google speed tests)</li>
+          <li>Mobile-friendly layout</li>
+          <li>Clear call-to-action on the first screen</li>
+          <li>Right main action for your type of business</li>
+          <li>Focused page (not too many competing goals)</li>
+          <li>Working call-to-action links</li>
+          <li>Tap-to-call</li>
+          <li>"Text Us" option</li>
+          <li>Online booking or ordering</li>
+          <li>Contact form</li>
+          <li>Overall performance score (Google PageSpeed)</li>
+          <li>Accessibility score (Google)</li>
+        </ul>
+      </div>
+      <div>
+        <h4>Marketing</h4>
+        <ul>
+          <li>Paid ad activity on Google and Meta</li>
+        </ul>
+        <p class="check-note">Slow lead response and dormant leads are estimated from your answers on the scan form, not checked online.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="appendix-block">
+    <h3>About these numbers</h3>
+    <p>Scores reflect what we found when we ran this scan on {{ scan_date }}. Search rankings, reviews, AI assistant answers and website speed change over time and can differ by location and device, so a scan on another day may show different results.</p>
+    <p>Dollar figures are estimates, not measurements. They apply general formulas based on published industry research and our own stated assumptions to the numbers you gave us on the scan form (leads, close rate, average job value and response time). They show what each gap <em>could</em> be costing you, rounded to whole or half jobs and shown as "up to" amounts. They are not based on your actual sales data and are not a guarantee of results or of what any fix will earn.</p>
+    <p>Some findings rely on third-party sources such as Google, review sites and AI assistants, which can be incomplete or out of date. Where we couldn't confirm something, we say so and leave it out of the totals. This report is for general informational purposes and is not financial, legal or accounting advice.</p>
   </div>
 
   <div class="closing-block">
