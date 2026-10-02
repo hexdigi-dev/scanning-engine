@@ -42,7 +42,9 @@ def _parse_score_summary(text: str):
     return score, summary
 
 
-async def _run_agent_check(check_name: str, system_prompt: str, user_prompt: str) -> CheckResult:
+async def _run_agent_check(
+    check_name: str, system_prompt: str, user_prompt: str, extra_keys: tuple = ()
+) -> CheckResult:
     """Runs one Claude + web-search-tool call and parses a SCORE/SUMMARY out
     of the response. Never raises - any failure (network, API error, or an
     unparseable response) produces a score-0 CheckResult with a clear
@@ -92,7 +94,16 @@ async def _run_agent_check(check_name: str, system_prompt: str, user_prompt: str
             )
 
         score, summary = parsed
-        return CheckResult(check_name=check_name, score=score, summary=summary, source_type="measured")
+        details = {}
+        for key in extra_keys:
+            match = re.search(rf"{key}:\s*(yes|no|unknown)", full_text, re.IGNORECASE)
+            details[key.lower()] = match.group(1).lower() if match else "unknown"
+        # Keep the KEY: lines out of the client-facing summary.
+        for key in extra_keys:
+            summary = re.sub(rf"\s*{key}:\s*\w+", "", summary, flags=re.IGNORECASE).strip()
+        return CheckResult(
+            check_name=check_name, score=score, summary=summary, source_type="measured", details=details
+        )
 
     except Exception as exc:
         print(f"[agent] {check_name} failed: {type(exc).__name__}: {exc}")
@@ -225,20 +236,20 @@ async def check_ad_activity(
     website_url: str = "",
     location: Optional[str] = None,
     ad_tags: Optional[list] = None,
+    category: Optional[str] = None,
 ) -> CheckResult:
     where = f" in {location}" if location else ""
     if ad_tags:
         evidence = (
-            f"DIRECT EVIDENCE: the business's own website ({website_url}) has these ad tracking tags "
-            f"installed: {', '.join(ad_tags)}. That means they run, or have run, ads on those platforms. "
-            "Treat this as strong evidence of ad activity (score at least 6) unless you find clear proof "
-            "the ads have stopped."
+            f"The business's own website ({website_url}) has these ad tags installed: {', '.join(ad_tags)}. "
+            "They make it possible to run, track and retarget ads on those platforms, but they are not "
+            "proof that ads are running right now."
         )
     elif ad_tags is not None:
         evidence = (
             f"The business's website ({website_url}) has NO Google Ads or Meta (Facebook/Instagram) ad "
-            "tracking tags installed. Businesses running ads almost always install these, so this is "
-            "evidence they are not running paid ads (or are running them without tracking results)."
+            "tags installed. Businesses running ads usually install these, so this leans toward no "
+            "paid ads (or ads running without any tracking)."
         )
     else:
         evidence = f"Their website is {website_url}; we couldn't read it for ad tracking tags."
@@ -252,18 +263,25 @@ website, or phone).
 Also try Meta's Ad Library and Google's Ads Transparency Center for this exact business, but
 expect those tools to often be unreadable - that is normal and not itself a finding.
 
-Score 0-10:
-- 0-2: Confirmed or strongly indicated NOT running ads (e.g. no ad tracking tags on the site
-  and nothing found anywhere for this business)
-- 3-5: Genuinely can't tell
-- 6-7: Strong indication of ad activity (e.g. ad tracking tags installed) but not confirmed current
-- 8-10: Confirmed ads currently running
+Also check whether OTHER local businesses of the same type appear as paid/sponsored results
+(Google sponsored results or Local Services Ads "Google Guaranteed", Yelp sponsored) for a
+search like "{category or 'their service'} in {location or 'their area'}".
+
+Before SCORE, add these two lines exactly:
+ADS_RUNNING: yes | no | unknown   (is THIS business currently running paid ads anywhere -
+  Google, Meta, Yelp, other? Ad tracking tags alone are not proof of ads running.)
+COMPETITORS_ADVERTISING: yes | no | unknown   (are competitors paying to appear in that search?)
+
+Score 0-10 for how confident you are THIS business is running ads (0 = clearly not, 10 = confirmed).
+In the SUMMARY, describe what you found for the business owner, including any competitor ads.
 {RESPONSE_FORMAT_INSTRUCTIONS}"""
     user_prompt = (
         f"Is {business_name}{where} ({website_url}) running paid ads on Google or Meta right now? "
         "Report what you find."
     )
-    return await _run_agent_check("Visible Ad Activity", system_prompt, user_prompt)
+    return await _run_agent_check(
+        "Visible Ad Activity", system_prompt, user_prompt, extra_keys=("ADS_RUNNING", "COMPETITORS_ADVERTISING")
+    )
 
 
 if __name__ == "__main__":

@@ -43,6 +43,19 @@ RESPONSE_TIME_LOSS_SHARE = {
     "Next day or longer": 0.50,
 }
 
+# After-hours coverage. Stated, deliberately conservative assumptions:
+# - share of leads that arrive after hours: 15%. Published figures range from
+#   ~10-14% (ServiceTitan residential HVAC data) to 20-30% (Invoca call
+#   analytics); vendor claims of 40-70% are left out as unverified.
+# - an uncovered after-hours lead waits until the next day, so it loses what
+#   a next-day response loses, minus what their stated response time already
+#   loses (counted in the slow lead response estimate - no double counting).
+# - phone covers about 3/4 of after-hours leads, the website the rest.
+AFTER_HOURS_LEAD_SHARE = 0.15
+PHONE_SHARE_OF_AFTER_HOURS = 0.75
+PHONE_COVERED_ANSWERS = ("Answering service", "AI receptionist", "Someone always answers")
+PHONE_UNCOVERED_ANSWERS = ("Goes to voicemail", "Not sure")
+
 # Stated assumption, not measured: share of the dormant-lead pool a revival
 # campaign turns into jobs each month. Monthly rather than one-time because a
 # business that keeps marketing keeps adding unconverted leads to the pool.
@@ -158,6 +171,12 @@ def _whole_jobs(raw_jobs: float) -> float:
         return 0.0
     halves = math.floor((raw_jobs + JOB_ROUNDING_TOLERANCE) * 2) / 2
     return max(halves, 0.5)
+
+
+def _jobs_text(jobs: float) -> str:
+    if jobs == 0.5:
+        return "about one job every two months"
+    return f"about {jobs:g} job{'s' if jobs != 1 else ''} a month"
 
 
 def calculate_visibility_gap(
@@ -420,6 +439,42 @@ def calculate_website_conversion_leak(
     )
 
 
+def calculate_after_hours(
+    scan_request: ScanRequest,
+    review_data: dict,
+    homepage_signals: Optional[dict],
+    current_customers: float,
+    avg_job_value: float,
+) -> dict:
+    """After-hours coverage from the form answer (phone), Google hours (open
+    24/7 counts as covered), and the website (online booking or a chat
+    widget). Returns status, gaps, jobs and dollars."""
+    homepage = homepage_signals or {}
+    if review_data.get("open_24_7") or scan_request.after_hours in PHONE_COVERED_ANSWERS:
+        phone = True
+    elif scan_request.after_hours in PHONE_UNCOVERED_ANSWERS:
+        phone = False
+    else:
+        phone = None
+    web = None if not homepage else bool(homepage.get("online_booking") or homepage.get("chat_widgets"))
+
+    if phone is None:
+        return {"status": "Need more information", "gaps": [], "jobs": 0.0, "value": 0.0}
+    gaps, uncovered_share = [], 0.0
+    if not phone:
+        gaps.append("After-hours calls go to voicemail" if scan_request.after_hours == "Goes to voicemail"
+                    else "No confirmed after-hours phone coverage")
+        uncovered_share += PHONE_SHARE_OF_AFTER_HOURS
+    if web is False:
+        gaps.append("No online booking or chat on your website for after-hours visitors")
+        uncovered_share += 1 - PHONE_SHARE_OF_AFTER_HOURS
+    status = "Covered" if not gaps else ("Not covered" if phone is False and web is False else "Partly covered")
+
+    extra_loss = max(0.0, RESPONSE_TIME_LOSS_SHARE["Next day or longer"] - RESPONSE_TIME_LOSS_SHARE[scan_request.response_time])
+    jobs = _whole_jobs(current_customers * AFTER_HOURS_LEAD_SHARE * uncovered_share * extra_loss) if gaps else 0.0
+    return {"status": status, "gaps": gaps, "jobs": jobs, "value": round(jobs * avg_job_value, 2)}
+
+
 def calculate_leak_estimate(
     scan_request: ScanRequest,
     review_data: dict,
@@ -535,7 +590,25 @@ def calculate_leak_estimate(
         headline_leak_monthly > plausibility_ceiling or combined_leak_total > plausibility_ceiling
     )
 
+    after_hours = calculate_after_hours(
+        scan_request, review_data, homepage_signals, current_customers, avg_job_value_numeric
+    )
+    after_hours_explanation = ""
+    if after_hours["value"]:
+        after_hours_explanation = (
+            f"About 1 in 7 leads reach a business after hours. Without a way to answer them, they wait "
+            f"until the next day, and many will have hired someone else by then. Based on your numbers, "
+            f"that could be costing you up to ${after_hours['value']:,.0f} a month "
+            f"({_jobs_text(after_hours['jobs'])}). Our Out-of-Hours AI Bot answers your calls while you're "
+            "closed and books appointments or call-backs."
+        )
+
     return LeakEstimate(
+        after_hours_status=after_hours["status"],
+        after_hours_gaps=after_hours["gaps"],
+        after_hours_leak_monthly=after_hours["value"],
+        after_hours_jobs_per_month=after_hours["jobs"],
+        after_hours_explanation=after_hours_explanation,
         headline_leak_monthly=headline_leak_monthly,
         headline_explanation=headline_explanation,
         supporting_leaks=supporting_leaks,
@@ -546,7 +619,7 @@ def calculate_leak_estimate(
         dormant_jobs_per_month=dormant_jobs,
         total_leak_monthly=combined_leak_total,
         foundation_website_leaks_monthly=round(sum(leak.monthly_value for leak in supporting_leaks), 2),
-        other_opportunities_monthly=round(headline_leak_monthly + dormant_lead_value, 2),
+        other_opportunities_monthly=round(headline_leak_monthly + dormant_lead_value + after_hours["value"], 2),
         avg_job_value=avg_job_value_numeric,
         close_rate=close_rate_numeric,
     )

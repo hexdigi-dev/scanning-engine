@@ -5,7 +5,7 @@
 
 {% macro fix_box(fix) %}
 <div class="fix-box">
-  <span class="fix-name">Fix: {{ fix.name }}{% if fix.detail %}<span class="fix-upgrade">{{ fix.detail }}</span>{% endif %}</span>
+  <span class="fix-name">{{ fix.label or "Fix" }}: {{ fix.name }}{% if fix.detail %}<span class="fix-upgrade">{{ fix.detail }}</span>{% endif %}</span>
   <span class="fix-price">{% if fix.starting %}<span class="fix-from">Starting at</span>{% endif %}{% if fix.was %}<s class="fix-was">{{ fix.was }}</s> {% endif %}{{ fix.price }}{% if fix.monthly %} {{ fix.monthly }}{% endif %}{% if fix.upgrade %}<span class="fix-upgrade">{% if not fix.was %}or {% endif %}{{ fix.upgrade }}</span>{% endif %}{% if fix.note %}<span class="fix-upgrade">{{ fix.note }}</span>{% endif %}</span>
 </div>
 {% endmacro %}
@@ -32,6 +32,18 @@
   <span class="overall-number">{{ score }}<span class="overall-out">/10</span></span>
 </div>
 {% endif %}
+{% endmacro %}
+
+{% macro row_list(rows) %}
+<ul class="check-list">
+  {% for row in rows %}
+      <li>
+        <div><span class="check-name">{{ row.name }}</span>{{ row.text }}</div>
+        {% if row.score is not none %}<span class="check-score {% if row.score >= 8 %}good{% elif row.score >= 5 %}mid{% else %}low{% endif %}">{{ row.score }}/10</span>
+        {% else %}<span class="check-score {% if row.status == 'pass' %}good{% elif row.status == 'fail' %}low{% else %}unchecked{% endif %}">{% if row.label %}{{ row.label }}{% elif row.status == 'pass' %}Pass{% elif row.status == 'fail' %}Needs work{% else %}Not checked{% endif %}</span>{% endif %}
+      </li>
+      {% endfor %}
+    </ul>
 {% endmacro %}
 
 {% macro score_list(checks) %}
@@ -83,19 +95,26 @@
   {% else %}<div class="appendix-block"><p>No major website leaks found.</p></div>{% endif %}
   <div class="appendix-block">
     <h3>What we checked</h3>
-    <ul class="check-list">
-      {% for row in website_rows %}
-      <li>
-        <div><span class="check-name">{{ row.name }}</span>{{ row.text }}</div>
-        <span class="check-score {% if row.status == 'pass' %}good{% elif row.status == 'fail' %}low{% else %}unchecked{% endif %}">{% if row.status == 'pass' %}Pass{% elif row.status == 'fail' %}Needs work{% else %}Not checked{% endif %}</span>
-      </li>
-      {% endfor %}
-    </ul>
+    {{ row_list(website_rows) }}
     {% if website_checks %}{{ score_list(website_checks) }}{% endif %}
     {{ overall("Overall website performance score", website_score) }}
   </div>
 
-  <div class="section-title">3. Other potential opportunities</div>
+  <div class="section-title">3. Paid advertising</div>
+  <div class="section-sub">Whether you're paying to reach new customers, and whether your site is set up to track and retarget them.</div>
+  <div class="appendix-block ad-status">
+    <h3>{{ ad_status }}</h3>
+    {% if ad_check and ad_check.source_type != "not_checked" %}<p>{{ ad_check.summary }}</p>
+    {% if ad_rows %}{{ row_list(ad_rows) }}{% endif %}
+    {% else %}<p>We couldn't check your paid advertising this time.</p>{% endif %}
+    <div class="overall-score">
+      <span class="overall-label">Paid advertising</span>
+      <span class="ad-rating">{{ ad_rating }}</span>
+    </div>
+    {{ fix_box(marketing_audit_fix) }}
+  </div>
+
+  <div class="section-title">4. Other potential opportunities</div>
   <div class="section-sub">Based on the answers you gave us about how you handle leads and marketing.</div>
   {% for card in other_cards %}{{ leak_card(card) }}{% endfor %}
 
@@ -114,14 +133,9 @@
   </div>
   {% endif %}
 
-  <div class="appendix-block ad-status">
-    <h3>Paid ads: {{ ad_status }}</h3>
-    {% if ad_check %}<p>{{ ad_check.summary }}</p>{% endif %}
-  </div>
-
   <div class="section-title">How this scan works</div>
   <div class="appendix-block">
-    <h3>The {{ report.checks_run or 20 }} checks we ran</h3>
+    <h3>The {{ report.checks_run or 23 }} checks we ran</h3>
     <div class="check-groups">
       <div>
         <h4>Online foundation</h4>
@@ -138,7 +152,7 @@
       <div>
         <h4>Website</h4>
         <ul>
-          <li>Mobile load speed (middle result of 3 Google speed tests)</li>
+          <li>Mobile load speed, scored out of 10 (middle result of 3 Google speed tests)</li>
           <li>Mobile-friendly layout</li>
           <li>Clear call-to-action on the first screen</li>
           <li>Right main action for your type of business</li>
@@ -147,17 +161,20 @@
           <li>Tap-to-call</li>
           <li>"Text Us" option</li>
           <li>Online booking or ordering</li>
+          <li>Live chat or AI chat for after-hours visitors</li>
           <li>Contact form</li>
           <li>Overall performance score (Google PageSpeed)</li>
           <li>Accessibility score (Google)</li>
         </ul>
       </div>
       <div>
-        <h4>Marketing</h4>
+        <h4>Paid advertising</h4>
         <ul>
-          <li>Paid ad activity on Google and Meta</li>
+          <li>Ads currently running (Google, Meta, Yelp and others)</li>
+          <li>Ad tags for tracking and retargeting, including inside Google Tag Manager</li>
+          <li>Competitor ads in your local search</li>
         </ul>
-        <p class="check-note">Slow lead response and dormant leads are estimated from your answers on the scan form, not checked online.</p>
+        <p class="check-note">Slow lead response, after-hours coverage and dormant leads are estimated from your answers on the scan form, plus your website and Google hours.</p>
       </div>
     </div>
   </div>

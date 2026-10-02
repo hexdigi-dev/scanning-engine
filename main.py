@@ -4,6 +4,7 @@ import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request, Security
@@ -53,6 +54,108 @@ def _score_if_checked(check: CheckResult):
 
 
 WEBSITE_ROW_CHECKS = 10
+# Paid advertising looks at three findings (ads running, ad tags, competitor
+# ads) inside one check, so it counts as three.
+AD_SUB_CHECKS = 2
+# Chat widget detection (for after-hours coverage) is its own check.
+CHAT_WIDGET_CHECK = 1
+
+
+def rate_paid_ads(check: CheckResult, homepage_signals: Optional[dict]) -> CheckResult:
+    """Paid advertising rating (no score out of 10):
+    Active - ads running and ad tags installed to track and retarget them;
+    Needs work - not running ads, or running them without ad tags;
+    Need more information - we couldn't tell whether ads are running.
+    Not part of any overall score or leak total."""
+    details = dict(check.details or {})
+    tags = (homepage_signals or {}).get("ad_tags") if homepage_signals else None
+    running = details.get("ads_running")
+    if running not in ("yes", "no"):
+        running = "unknown"
+        if check.source_type != "not_checked" and check.score >= 8:
+            running = "yes"
+    competitors = details.get("competitors_advertising", "unknown")
+    has_tags = bool(tags)
+
+    if running == "yes":
+        rating = "Active" if has_tags else "Needs work"
+        status = "Running ads and tracking them" if has_tags else "Running ads without ad tags"
+    elif running == "no":
+        rating = "Needs work"
+        status = "Not running ads - competitors are" if competitors == "yes" else "Not running ads"
+    else:
+        rating = "Need more information"
+        status = "Couldn't confirm whether ads are running"
+
+    summary = check.summary
+    if check.source_type == "not_checked" or not summary:
+        summary = {
+            "Couldn't confirm whether ads are running": (
+                "Your website has ad tags installed for tracking and retargeting, but we couldn't confirm "
+                "whether any ads are running right now."
+                if has_tags
+                else "We couldn't confirm whether your business is running paid ads right now."
+            ),
+            "Not running ads": "We found no sign of paid ads for your business.",
+            "Not running ads - competitors are": "We found no sign of paid ads for your business, while "
+            "competitors are paying to appear in your area's searches.",
+        }.get(status, summary)
+    if (homepage_signals or {}).get("conversion_tracking"):
+        summary += " Your site also records conversions (like calls or form fills) from your ads."
+    return check.model_copy(
+        update={
+            # The rating replaces a score; 0 is a placeholder the report doesn't show.
+            "score": 0,
+            "summary": summary,
+            "source_type": "measured",
+            "details": {
+                **details,
+                "rating": rating,
+                "status": status,
+                "ads_running": running,
+                "ad_tags": tags or [],
+                "tags_checked": tags is not None,
+            },
+        }
+    )
+
+
+# No new Google review in this many days counts as a stale review flow.
+STALE_REVIEW_DAYS = 60
+
+
+def annotate_reviews(reviews: CheckResult, presence: dict, local_ranking: CheckResult) -> CheckResult:
+    """Adds review comparisons to the Google Reviews check: how their count
+    compares with the top map competitors and how recent the newest review
+    is. These trigger the Reputation Builder offer; they don't change the
+    score or any leak."""
+    if reviews.source_type == "not_checked" or not presence.get("gbp_found"):
+        return reviews
+    count = presence.get("review_count") or 0
+    competitors = [c for c in ((local_ranking.details or {}).get("competitor_reviews") or []) if c.get("reviews")]
+    avg = round(sum(c["reviews"] for c in competitors) / len(competitors)) if competitors else None
+    days = presence.get("latest_review_days")
+    summary = reviews.summary
+    behind = bool(avg and count < avg)
+    if behind:
+        summary += f" The top businesses in your map search average {avg} Google reviews."
+    stale = days is not None and days > STALE_REVIEW_DAYS
+    if stale:
+        summary += f" Your most recent review was about {days} days ago."
+    return reviews.model_copy(
+        update={
+            "summary": summary,
+            "details": {
+                **(reviews.details or {}),
+                "competitor_review_avg": avg,
+                "behind_competitors": behind,
+                "latest_review_days": days,
+                "stale": stale,
+            },
+        }
+    )
+
+
 # Hold the client email when this many checks couldn't run.
 HOLD_IF_UNCHECKED = 3
 
@@ -283,6 +386,7 @@ async def scan(request: ScanRequest, http_request: Request) -> ScanResponse:
             request.website_url,
             location,
             (homepage_signals or {}).get("ad_tags"),
+            raw_presence_data.get("gbp_category") or request.business_type,
         ),
     )
 
@@ -299,6 +403,13 @@ async def scan(request: ScanRequest, http_request: Request) -> ScanResponse:
         f"{'read' if homepage_signals else 'NOT read'}, CTA assessment "
         f"{({k: v for k, v in (cta_assessment or {}).items() if k != 'notes'}) or 'FAILED'}"
     )
+
+    ad_activity_check = rate_paid_ads(ad_activity_check, homepage_signals)
+
+    presence_checks = [
+        annotate_reviews(check, raw_presence_data, local_ranking_check) if check.check_name == "Google Reviews" else check
+        for check in presence_checks
+    ]
 
     all_checks = website_checks + presence_checks + [
         social_check,
@@ -360,7 +471,7 @@ async def scan(request: ScanRequest, http_request: Request) -> ScanResponse:
         # Report checks plus the website rows (speed, mobile layout, clear
         # call-to-action, main action, focus, working links, tap-to-call,
         # Text Us, booking, contact form).
-        checks_run=len(synthesis_result.checks) + WEBSITE_ROW_CHECKS,
+        checks_run=len(synthesis_result.checks) + WEBSITE_ROW_CHECKS + AD_SUB_CHECKS + CHAT_WIDGET_CHECK,
         internal_alerts=internal_alerts,
         hold_client_email=hold_client_email,
         leaks_display=f"${leak_estimate.foundation_website_leaks_monthly:,.0f}",

@@ -47,6 +47,7 @@ FORM_OPTIONS = {
     "response_time": ["Under 5 minutes", "Within an hour", "Same day", "Next day or longer"],
     "close_rate": ["Under 10%", "10–25%", "25–50%", "50%+"],
     "dormant_leads": ["None that I know of", "A handful", "25–100", "100–500", "500+"],
+    "after_hours": ["Goes to voicemail", "Answering service", "AI receptionist", "Someone always answers", "Not sure"],
     "state": [
         "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "DC", "FL", "GA", "HI", "ID", "IL", "IN",
         "IA", "KS", "KY", "LA", "ME", "MD", "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH",
@@ -71,6 +72,7 @@ FIELD_LABELS = {
     "response_time": "How fast you usually respond to a new lead",
     "close_rate": "Share of leads that become customers",
     "dormant_leads": "Old leads that never became customers",
+    "after_hours": "When someone calls after hours, what happens?",
 }
 
 # The service that fixes each section's leak, with its price. Edit names
@@ -115,10 +117,25 @@ WEBSITE_FIX = {
 SPEED_TO_LEAD_FIX = {
     "name": "Speed-to-Lead Bot",
     "starting": True,
-    "price": "$497 setup + $197/mo",
-    "note": "Add AI voice answering: +$100/mo",
-    "detail": "Replies to every new web lead and missed call in under 60 seconds by text, with "
-    "optional AI voice answering.",
+    "price": "$497 + $200/mo",
+    "detail": "Replies to every new lead (form submissions, missed calls, and lead-site requests) by "
+    "text and email in under 60 seconds, any time of day, with your booking link and automatic follow-ups.",
+}
+OUT_OF_HOURS_FIX = {
+    "name": "Out-of-Hours AI Bot",
+    "starting": True,
+    "price": "$497 + $200/mo",
+    "detail": "An after-hours answering service: answers your calls while you're closed and books "
+    "appointments or schedules call-backs.",
+}
+# Offered in the Paid advertising section, whatever the rating.
+MARKETING_AUDIT_FIX = {
+    "label": "Next step",
+    "name": "Pheonix Marketing Audit",
+    "price": "Baby Pheonix: $997",
+    "note": "up to 2 ad channels. Full Pheonix (3 or more channels): $1,997",
+    "detail": "A review of your paid advertising: where you're spending, what's being tracked, what "
+    "competitors are doing, and a clear plan to get more jobs from every ad dollar.",
 }
 # Kept so reports saved with the old per-leak labels still show a fix.
 LEAK_FIXES = {"headline": SPEED_TO_LEAD_FIX}
@@ -180,11 +197,13 @@ def lookup_zip(zip_code: str) -> Optional[dict]:
 
 
 def ad_status(check) -> str:
-    """Simple ad status for the Other Potential Leaks section, from the ad
-    check's 0-10 rubric: confirmed active ads (8-10), confirmed none (0),
-    anything uncertain in between."""
+    """Headline for the Paid advertising section. New scans carry a status
+    from the findings-based rating; older saved reports fall back to the old
+    0-10 rubric."""
     if check is None or getattr(check, "source_type", None) == "not_checked":
-        return "Couldn't tell"
+        return "Not checked"
+    if (getattr(check, "details", None) or {}).get("status"):
+        return check.details["status"]
     if check.score >= 8:
         return "Running ads"
     if check.score == 0:
@@ -241,6 +260,62 @@ FOUNDATION_CHECK_NAMES = [
 WEBSITE_CHECK_NAMES = ["Website Health", "Accessibility Basics"]
 
 
+# Mobile load time (seconds) -> score out of 10. Google rates 2.5s or less
+# as good; the steps line up with the website leak's load-time tiers.
+LOAD_SPEED_SCORES = ((2.5, 10), (3.0, 8), (4.0, 6), (5.0, 4), (6.0, 2), (7.0, 1))
+
+
+def load_speed_score(lcp: Optional[float]) -> Optional[int]:
+    if lcp is None:
+        return None
+    return next((score for limit, score in LOAD_SPEED_SCORES if lcp <= limit), 0)
+
+
+def _ad_rows(check) -> list:
+    """The three paid advertising findings as report rows, same style as the
+    website rows. The section score itself still comes from rate_paid_ads."""
+    if check is None or check.source_type == "not_checked":
+        return []
+    details = check.details or {}
+    running = details.get("ads_running", "unknown")
+    competitors = details.get("competitors_advertising", "unknown")
+    tags = details.get("ad_tags") or []
+    rows = []
+
+    def row(name, ok, pass_text, fail_text):
+        status = "unchecked" if ok is None else ("pass" if ok else "fail")
+        text = "Couldn't check" if ok is None else (pass_text if ok else fail_text)
+        rows.append({"name": name, "status": status, "text": text, "score": None})
+
+    row("Paid ads running", {"yes": True, "no": False}.get(running), "Ads found for your business", "No current ads found")
+    row(
+        "Ad tags for tracking and retargeting",
+        bool(tags) if details.get("tags_checked", True) else None,
+        "Installed: " + ", ".join(tags) if tags else "Installed",
+        "None found on your website",
+    )
+    # Competitor ads: a pass only when competitors advertise and so do they;
+    # with no competitor ads it's shown as neutral information, not a pass.
+    if competitors == "no":
+        rows.append(
+            {
+                "name": "Keeping up with competitor ads",
+                "status": "info",
+                "label": "None found",
+                "text": "No competitors found advertising in your search",
+                "score": None,
+            }
+        )
+    else:
+        row(
+            "Keeping up with competitor ads",
+            None if competitors != "yes" else running == "yes",
+            "Competitors are advertising and so are you",
+            "Competitors are paying to appear above you",
+        )
+    return rows
+
+
 def overall_score(scores: list) -> Optional[int]:
     """Average of the checks that ran, on a 0-10 scale, rounded down. Checks
     we couldn't run are left out rather than counted as 0. None if nothing ran."""
@@ -257,13 +332,20 @@ def _website_rows(details: dict) -> list:
     assessment = details.get("assessment") or {}
     rows = []
 
-    def row(name, ok, pass_text, fail_text):
+    def row(name, ok, pass_text, fail_text, score=None):
         status = "unchecked" if ok is None else ("pass" if ok else "fail")
         text = "Couldn't check" if ok is None else (pass_text if ok else fail_text)
-        rows.append({"name": name, "status": status, "text": text})
+        rows.append({"name": name, "status": status, "text": text, "score": score})
 
     lcp = details.get("lcp_seconds")
-    row("Load speed", None if lcp is None else lcp < 3.0, f"{lcp or 0:.1f}s on mobile", f"{lcp or 0:.1f}s on mobile (aim for under 2.5s)")
+    speed_score = load_speed_score(lcp)
+    row(
+        "Load speed",
+        None if lcp is None else speed_score == 10,
+        f"{lcp or 0:.1f}s on mobile",
+        f"{lcp or 0:.1f}s on mobile (aim for 2.5s or less)",
+        score=speed_score,
+    )
     row("Mobile-friendly layout", homepage.get("responsive"), "Adapts to phones", "Not built for phones")
     row(
         "Clear call-to-action on first screen",
@@ -341,8 +423,12 @@ def render_report(request: Request, report: ScanResponse):
         if foundation
         else None
     )
-    needs_reputation = foundation is not None and any(
-        word in issue.lower() for issue in foundation.issues for word in ("review", "rating", "reputation")
+    reviews_details = (checks_by_name.get("Google Reviews").details or {}) if checks_by_name.get("Google Reviews") else {}
+    needs_reputation = foundation is not None and (
+        any(word in issue.lower() for issue in foundation.issues for word in ("review", "rating", "reputation"))
+        # Fewer reviews than the top map competitors, or no new review lately.
+        or bool(reviews_details.get("behind_competitors"))
+        or bool(reviews_details.get("stale"))
     )
     needs_ai_search = foundation is not None and any("ai assistant" in issue.lower() for issue in foundation.issues)
     foundation_extra_fixes = [
@@ -373,6 +459,18 @@ def render_report(request: Request, report: ScanResponse):
                 estimate.headline_jobs_per_month,
                 estimate.headline_explanation,
                 fix=SPEED_TO_LEAD_FIX,
+            )
+        )
+    if estimate.after_hours_leak_monthly > 0:
+        other_cards.append(
+            _leak_card(
+                "After-hours coverage",
+                f"After-hours coverage: {estimate.after_hours_status}",
+                estimate.after_hours_leak_monthly,
+                estimate.after_hours_jobs_per_month,
+                estimate.after_hours_explanation,
+                estimate.after_hours_gaps,
+                fix=OUT_OF_HOURS_FIX,
             )
         )
     # Leaks from reports saved before the new sections existed.
@@ -410,7 +508,7 @@ def render_report(request: Request, report: ScanResponse):
             "estimate": estimate,
             "leak_total": leak_total,
             "opportunities_total": opportunities_total,
-            "checks_run": report.checks_run or 20,
+            "checks_run": report.checks_run or 23,
             "foundation_checks": foundation_checks,
             "foundation_card": foundation_card,
             "foundation_extra_fixes": foundation_extra_fixes,
@@ -422,13 +520,24 @@ def render_report(request: Request, report: ScanResponse):
             # Pass = 10, needs work = 0, plus the Website Health and
             # Accessibility scores as they are.
             "website_score": overall_score(
-                [10 if row["status"] == "pass" else 0 for row in website_rows if row["status"] != "unchecked"]
+                [
+                    row["score"] if row.get("score") is not None else (10 if row["status"] == "pass" else 0)
+                    for row in website_rows
+                    if row["status"] != "unchecked"
+                ]
                 + [c.score for c in website_checks if c.source_type != "not_checked"]
             ),
             "website_card": website_card,
             "other_cards": other_cards,
             "ad_status": ad_status(checks_by_name.get("Visible Ad Activity")),
+            "ad_rating": (
+                (checks_by_name["Visible Ad Activity"].details or {}).get("rating", "Need more information")
+                if "Visible Ad Activity" in checks_by_name
+                else "Need more information"
+            ),
+            "marketing_audit_fix": MARKETING_AUDIT_FIX,
             "ad_check": checks_by_name.get("Visible Ad Activity"),
+            "ad_rows": _ad_rows(checks_by_name.get("Visible Ad Activity")),
             "scan_date": report.scanned_at.strftime("%B %-d, %Y"),
             "booking_url": config.BOOKING_URL,
             "lead_revival_fix": LEAD_REVIVAL_FIX,

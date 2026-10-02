@@ -65,9 +65,34 @@ CONTACT_FORM_MARKERS = (
 # Links worth following to find a contact form or booking tool that isn't
 # on the homepage itself (e.g. a separate Contact page).
 AD_TAG_MARKERS = {
-    "Google Ads": ("googleadservices.com", "gtag('config', 'aw-", 'gtag("config", "aw-', "/pagead/conversion", "'aw-", '"aw-'),
-    "Meta (Facebook/Instagram) Pixel": ("connect.facebook.net/en_us/fbevents.js", "fbq('init'", 'fbq("init"'),
+    "Google Ads": (
+        "googleadservices.com", "gtag('config', 'aw-", 'gtag("config", "aw-', "/pagead/conversion",
+        "gtag/js?id=aw-", "'aw-", '"aw-',
+        # Inside a Google Tag Manager container: Google Ads conversion and
+        # remarketing tag templates.
+        '"__awct"', '"__sp"',
+    ),
+    "Meta (Facebook/Instagram) Pixel": (
+        "connect.facebook.net/en_us/fbevents.js", "fbevents.js", "fbq('init'", 'fbq("init"', "fbq(\\'init\\'",
+    ),
 }
+# A tag that records a result (a call, form fill, booking), not just a visit.
+CONVERSION_EVENT_PATTERNS = (
+    r"aw-\d+/[\w-]+",  # Google Ads conversion: send_to 'AW-123/label'
+    r'"__awct"',  # Google Ads conversion tag inside Tag Manager
+    r"fbq\(\s*\\?['\"]track\\?['\"]\s*,\s*\\?['\"](lead|contact|schedule|submitapplication|completeregistration|purchase)",
+)
+# Live chat / AI chat widgets that can answer website visitors after hours.
+CHAT_WIDGET_MARKERS = {
+    "Tidio": ("tidio",), "tawk.to": ("tawk.to",), "Intercom": ("widget.intercom.io", "intercomsettings"),
+    "LiveChat": ("livechatinc.com",), "Drift": ("js.driftt.com", "drift.com/"), "Podium": ("podium.com",),
+    "Birdeye": ("birdeye.com",), "GoHighLevel chat": ("leadconnectorhq.com", "msgsndr.com"),
+    "HubSpot chat": ("js.usemessages.com", "hubspot-messages"), "Zendesk chat": ("zdassets.com",),
+    "Crisp": ("client.crisp.chat",), "Olark": ("olark.com",), "Hatch": ("usehatchapp.com",),
+    "Smith.ai chat": ("smith.ai",), "Chatbase": ("chatbase.co",),
+}
+GTM_ID = re.compile(r"\bGTM-[A-Z0-9]{4,9}\b")
+GTM_URL = "https://www.googletagmanager.com/gtm.js?id="
 SECONDARY_PAGE_WORDS = ("contact", "quote", "estimate", "schedule", "book", "appointment", "request")
 MAX_SECONDARY_PAGES = 2
 # Homepages smaller than this are usually a bot-block or redirect page.
@@ -269,6 +294,31 @@ async def check_homepage_signals(website_url: str) -> dict:
         )
     all_html = html + " " + extra_html
 
+    # Many sites load their ad tags through Google Tag Manager, so they never
+    # appear in the page code. The container script is public - read it too.
+    gtm_ids = sorted(set(GTM_ID.findall(html.upper())))[:3]
+    gtm_js = ""
+    if gtm_ids:
+        try:
+            async with httpx.AsyncClient(timeout=PAGE_TIMEOUT, follow_redirects=True) as client:
+                containers = await asyncio.gather(
+                    *(client.get(GTM_URL + gtm_id) for gtm_id in gtm_ids), return_exceptions=True
+                )
+            gtm_js = " ".join(
+                c.text.lower() for c in containers if isinstance(c, httpx.Response) and c.status_code == 200
+            )
+        except Exception as exc:
+            print(f"[website] Tag Manager read failed: {type(exc).__name__}: {exc}")
+    ad_html = all_html + " " + gtm_js
+    ad_tags = [name for name, markers in AD_TAG_MARKERS.items() if any(m in ad_html for m in markers)]
+    conversion_tracking = any(re.search(pattern, ad_html) for pattern in CONVERSION_EVENT_PATTERNS)
+    chat_widgets = [name for name, markers in CHAT_WIDGET_MARKERS.items() if any(m in ad_html for m in markers)]
+    print(
+        f"[website] ad tags: {ad_tags or 'none'}; conversion events: {'yes' if conversion_tracking else 'none seen'}; "
+        f"Tag Manager containers: {gtm_ids or 'none'}{' (read)' if gtm_js else ''}; "
+        f"chat widgets: {chat_widgets or 'none'}"
+    )
+
     contact_form = any(marker in all_html for marker in CONTACT_FORM_MARKERS)
     contact_url = next((u for u in secondary_urls if "contact" in u.lower()), None) or (
         secondary_urls[0] if secondary_urls else None
@@ -313,7 +363,9 @@ async def check_homepage_signals(website_url: str) -> dict:
         "online_booking": any(marker in all_html for marker in BOOKING_MARKERS),
         "online_ordering": any(marker in all_html for marker in ORDERING_MARKERS),
         # Ad tracking tags on the site are direct evidence of paid ads.
-        "ad_tags": [name for name, markers in AD_TAG_MARKERS.items() if any(m in all_html for m in markers)],
+        "ad_tags": ad_tags,
+        "conversion_tracking": conversion_tracking,
+        "chat_widgets": chat_widgets,
         # Visible words on the contact page - form labels ("First Name*",
         # "Message*") show up here even when the form itself is drawn by
         # JavaScript.

@@ -175,6 +175,30 @@ def _extract_city_state(place: dict) -> Optional[str]:
     return None
 
 
+def _latest_review_days(place: dict) -> Optional[int]:
+    """Days since the newest review Google returned, or None if no dates."""
+    from datetime import datetime, timezone
+
+    newest = None
+    for review in place.get("reviews", []) or []:
+        published = review.get("publishTime")
+        if not published:
+            continue
+        try:
+            when = datetime.fromisoformat(published.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        newest = when if newest is None or when > newest else newest
+    return None if newest is None else (datetime.now(timezone.utc) - newest).days
+
+
+def _open_24_7(place: dict) -> bool:
+    """True when Google lists the business as open 24 hours, every day."""
+    periods = (place.get("regularOpeningHours") or {}).get("periods") or []
+    # Google represents "open 24 hours" as a single period with no close.
+    return len(periods) == 1 and "close" not in periods[0]
+
+
 def _site_host(url: Optional[str]) -> Optional[str]:
     """'https://www.Example.com/contact' -> 'example.com'."""
     if not url:
@@ -205,7 +229,7 @@ def _normalize_name(name: Optional[str]) -> str:
 
 
 async def _search_places(
-    client: httpx.AsyncClient, query: str, page_size: int = MAX_CANDIDATES_TO_CHECK
+    client: httpx.AsyncClient, query: str, page_size: int = MAX_CANDIDATES_TO_CHECK, with_reviews: bool = False
 ) -> list:
     """Places API (New) Text Search. Unlike the legacy API, this can return
     service-area businesses (plumbers, cleaners, mobile services) that hide
@@ -216,7 +240,9 @@ async def _search_places(
         headers={
             "Content-Type": "application/json",
             "X-Goog-Api-Key": GOOGLE_API_KEY,
-            "X-Goog-FieldMask": PLACE_FIELD_MASK,
+            # Reviews (with dates) only for the business's own lookup - they
+            # make the call pricier, so the competitor search skips them.
+            "X-Goog-FieldMask": PLACE_FIELD_MASK + (",places.reviews" if with_reviews else ""),
         },
         json={
             "textQuery": query,
@@ -308,13 +334,16 @@ async def check_google_presence(
         "gbp_category": None,
         "brand_query": None,
         "brand_rank": None,
+        "latest_review_days": None,
+        "open_24_7": None,
+        "hours_text": [],
     }
 
     query = f"{business_name} {city}".strip() if city else business_name
 
     try:
         async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
-            places = await _search_places(client, query)
+            places = await _search_places(client, query, with_reviews=True)
     except Exception as exc:
         # An error means we couldn't check - never report it as "no profile",
         # which would invent a large foundation leak.
@@ -430,6 +459,9 @@ async def check_google_presence(
             "gbp_has_website": bool(place.get("websiteUri")),
             "rating": rating,
             "gbp_place_id": place.get("id"),
+            "latest_review_days": _latest_review_days(place),
+            "open_24_7": _open_24_7(place),
+            "hours_text": (place.get("regularOpeningHours") or {}).get("weekdayDescriptions") or [],
             "gbp_category": (place.get("primaryTypeDisplayName") or {}).get("text"),
             "brand_query": query,
             "brand_rank": places.index(place) + 1,
@@ -513,6 +545,11 @@ async def check_map_pack(
     place_id = presence.get("gbp_place_id")
     rank = next((i + 1 for i, p in enumerate(places) if p.get("id") == place_id), None)
     top_three = [p.get("displayName", {}).get("text") for p in places[:3]]
+    competitor_reviews = [
+        {"name": p.get("displayName", {}).get("text"), "reviews": p.get("userRatingCount") or 0}
+        for p in places[:3]
+        if p.get("id") != presence.get("gbp_place_id")
+    ]
     print(f"[google] map-pack search {query!r}: rank {rank or 'not in top ' + str(len(places))}; top 3: {top_three}")
 
     if rank is not None and rank <= 3:
@@ -541,7 +578,13 @@ async def check_map_pack(
         + (f" The top 3 were: {', '.join(top_three)}." if (rank is None or rank > 3) else "")
         + " Map results shift slightly with the searcher's location."
     )
-    return CheckResult(check_name="Local Search Ranking", score=score, summary=summary, source_type="measured")
+    return CheckResult(
+        check_name="Local Search Ranking",
+        score=score,
+        summary=summary,
+        source_type="measured",
+        details={"rank": rank, "competitor_reviews": competitor_reviews},
+    )
 
 
 if __name__ == "__main__":

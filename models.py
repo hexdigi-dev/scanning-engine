@@ -31,6 +31,11 @@ class ScanRequest(BaseModel):
     dormant_leads: Literal[
         "None that I know of", "A handful", "25–100", "100–500", "500+"
     ]
+    # What happens to calls after hours. Optional ("" = not asked) so older
+    # requests and Make mappings without it still work.
+    after_hours: Literal[
+        "", "Goes to voicemail", "Answering service", "AI receptionist", "Someone always answers", "Not sure"
+    ] = ""
 
     @field_validator("website_url")
     @classmethod
@@ -61,6 +66,8 @@ class CheckResult(BaseModel):
     # "not_checked": the check couldn't run (e.g. no location), so its score
     # means nothing and no leak is estimated from it.
     source_type: Literal["measured", "estimated", "not_checked"]
+    # Extra structured findings some checks report (e.g. ads running yes/no).
+    details: dict = {}
 
     @field_validator("score")
     @classmethod
@@ -99,6 +106,14 @@ class LeakEstimate(BaseModel):
     # the "other potential opportunities": slow lead response + dormant leads.
     foundation_website_leaks_monthly: float = 0.0
     other_opportunities_monthly: float = 0.0
+    # After-hours coverage: "Covered", "Partly covered", "Not covered", or
+    # "Need more information" (form question not answered); the estimate is
+    # an "other opportunity" like slow lead response.
+    after_hours_status: str = ""
+    after_hours_gaps: List[str] = []
+    after_hours_leak_monthly: float = 0.0
+    after_hours_jobs_per_month: float = 0.0
+    after_hours_explanation: str = ""
     avg_job_value: float = 0.0
     # The self-reported close rate (range midpoint), used to price the
     # performance-based Lead Revival options.
