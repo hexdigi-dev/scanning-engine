@@ -139,9 +139,10 @@ def annotate_reviews(reviews: CheckResult, presence: dict, local_ranking: CheckR
     behind = bool(avg and count < avg)
     if behind:
         summary += f" The top businesses in your map search average {avg} Google reviews."
-    stale = days is not None and days > STALE_REVIEW_DAYS
-    if stale:
-        summary += f" Your most recent review was about {days} days ago."
+    # Google returns its 5 "most relevant" reviews, not the newest, so the
+    # newest date among them can be years old for a business with fresh
+    # reviews. Not reliable enough to show or act on - kept for logs only.
+    stale = False
     return reviews.model_copy(
         update={
             "summary": summary,
