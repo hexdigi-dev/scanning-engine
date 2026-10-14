@@ -62,6 +62,7 @@ FIELD_LABELS = {
     "phone": "Phone",
     "business_name": "Business name",
     "street_address": "Street address",
+    "social_handles": "Social media handles",
     "city": "City",
     "state": "State",
     "zip_code": "ZIP code",
@@ -316,6 +317,38 @@ def _ad_rows(check) -> list:
     return rows
 
 
+def _social_rows(check) -> list:
+    """One row per platform (Facebook and Instagram always; others when
+    found): found or not, linked from their website, followers if seen."""
+    if check is None or check.source_type == "not_checked":
+        return []
+    platforms = (check.details or {}).get("platforms") or {}
+    if not platforms:
+        return []
+    names = {"facebook": "Facebook", "instagram": "Instagram", "linkedin": "LinkedIn", "tiktok": "TikTok",
+             "youtube": "YouTube", "x": "X (Twitter)", "nextdoor": "Nextdoor"}
+    rows = []
+    for key, name in names.items():
+        info = platforms.get(key) or {}
+        found = bool(info.get("found")) or str(info.get("status", "")).startswith("found")
+        if key not in ("facebook", "instagram") and not found:
+            continue
+        if not found:
+            rows.append({"name": name, "status": "fail", "label": "Not found", "text": "No profile found", "score": None})
+            continue
+        parts = ["Linked from your website" if info.get("linked") else "Not linked from your website"]
+        if info.get("followers") is not None:
+            parts.append(f"{info['followers']:,} followers")
+        rows.append({
+            "name": name,
+            "status": "pass" if info.get("linked") else "info",
+            "label": "Found",
+            "text": " · ".join(parts),
+            "score": None,
+        })
+    return rows
+
+
 def overall_score(scores: list) -> Optional[int]:
     """Average of the checks that ran, on a 0-10 scale, rounded down. Checks
     we couldn't run are left out rather than counted as 0. None if nothing ran."""
@@ -538,6 +571,7 @@ def render_report(request: Request, report: ScanResponse):
             "marketing_audit_fix": MARKETING_AUDIT_FIX,
             "ad_check": checks_by_name.get("Visible Ad Activity"),
             "ad_rows": _ad_rows(checks_by_name.get("Visible Ad Activity")),
+            "social_rows": _social_rows(checks_by_name.get("Social Media Presence")),
             "scan_date": report.scanned_at.strftime("%B %-d, %Y"),
             "booking_url": config.BOOKING_URL,
             "lead_revival_fix": LEAD_REVIVAL_FIX,

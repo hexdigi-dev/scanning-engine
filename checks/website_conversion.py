@@ -91,6 +91,13 @@ CHAT_WIDGET_MARKERS = {
     "Crisp": ("client.crisp.chat",), "Olark": ("olark.com",), "Hatch": ("usehatchapp.com",),
     "Smith.ai chat": ("smith.ai",), "Chatbase": ("chatbase.co",),
 }
+# Social profile links on the business's own site (not share buttons).
+SOCIAL_LINK = re.compile(
+    r"https?://(?:www\.|m\.)?(facebook\.com|instagram\.com|linkedin\.com/company|tiktok\.com|"
+    r"youtube\.com|x\.com|twitter\.com|nextdoor\.com/pages)/([A-Za-z0-9_.@-]{2,})",
+    re.IGNORECASE,
+)
+SOCIAL_SKIP = ("sharer", "share", "intent", "plugins", "dialog", "tr", "watch", "embed", "p", "reel", "hashtag")
 GTM_ID = re.compile(r"\bGTM-[A-Z0-9]{4,9}\b")
 GTM_URL = "https://www.googletagmanager.com/gtm.js?id="
 SECONDARY_PAGE_WORDS = ("contact", "quote", "estimate", "schedule", "book", "appointment", "request")
@@ -313,10 +320,17 @@ async def check_homepage_signals(website_url: str) -> dict:
     ad_tags = [name for name, markers in AD_TAG_MARKERS.items() if any(m in ad_html for m in markers)]
     conversion_tracking = any(re.search(pattern, ad_html) for pattern in CONVERSION_EVENT_PATTERNS)
     chat_widgets = [name for name, markers in CHAT_WIDGET_MARKERS.items() if any(m in ad_html for m in markers)]
+    social_links = sorted(
+        {
+            f"https://{site.lower()}/{handle.rstrip('/')}"
+            for site, handle in SOCIAL_LINK.findall(raw_html)
+            if handle.lower().strip("/") not in SOCIAL_SKIP
+        }
+    )[:8]
     print(
         f"[website] ad tags: {ad_tags or 'none'}; conversion events: {'yes' if conversion_tracking else 'none seen'}; "
         f"Tag Manager containers: {gtm_ids or 'none'}{' (read)' if gtm_js else ''}; "
-        f"chat widgets: {chat_widgets or 'none'}"
+        f"chat widgets: {chat_widgets or 'none'}; social links: {social_links or 'none'}"
     )
 
     contact_form = any(marker in all_html for marker in CONTACT_FORM_MARKERS)
@@ -366,6 +380,7 @@ async def check_homepage_signals(website_url: str) -> dict:
         "ad_tags": ad_tags,
         "conversion_tracking": conversion_tracking,
         "chat_widgets": chat_widgets,
+        "social_links": social_links,
         # Visible words on the contact page - form labels ("First Name*",
         # "Message*") show up here even when the form itself is drawn by
         # JavaScript.

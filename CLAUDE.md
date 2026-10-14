@@ -76,6 +76,11 @@ Rules that must hold:
 - A check that couldn't run is "Not checked": excluded from scores and leak totals, never shown
   as 0/10, never shows raw errors to the client.
 - Google's API returns "most relevant" reviews, not newest — don't infer review recency from it.
+- Social score is rules-based (`main.rate_social`), only from what the scan can see (no posting
+  activity until a profile-data service is added at volume). Per profile: exists 1.5, linked
+  from their website +1, followers 100-999 +0.5 or 1,000+ +1. Sum, round down, cap 10. Links on
+  their own site and handles entered on the form count as found. The foundation leak counts
+  "No active social media presence" only when no profiles are found (score 0).
 
 ## Estimates (underpromise: when in doubt, estimate lower)
 

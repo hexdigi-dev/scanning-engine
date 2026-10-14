@@ -192,3 +192,7 @@ footer{text-align:center; padding:26px 32px; font-size:12.5px; color:var(--gray-
   -webkit-background-clip:text; background-clip:text; color:transparent;
 }
 .ad-status .fix-box{margin-top:18px;}
+
+/* Per-platform rows nested under Social Media Presence */
+.sub-rows{margin-top:10px;}
+.sub-rows .check-list li{padding:8px 0;}

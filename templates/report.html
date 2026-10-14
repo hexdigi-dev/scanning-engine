@@ -46,11 +46,12 @@
     </ul>
 {% endmacro %}
 
-{% macro score_list(checks) %}
+{% macro score_list(checks, social_rows=[]) %}
 <ul class="check-list">
   {% for check in checks %}
   <li>
-    <div><span class="check-name">{{ check.check_name }}</span>{{ check.summary }}</div>
+    <div><span class="check-name">{{ check.check_name }}</span>{{ check.summary }}
+    {% if check.check_name == "Social Media Presence" and social_rows %}<div class="sub-rows">{{ row_list(social_rows) }}<p class="check-note">Posting activity isn't scored yet. We'll review how often you post together on your follow-up call.</p></div>{% endif %}</div>
     {% if check.source_type == "not_checked" %}<span class="check-score unchecked">Not checked</span>
     {% else %}<span class="check-score {% if check.score >= 8 %}good{% elif check.score >= 5 %}mid{% else %}low{% endif %}">{{ check.score }}/10</span>{% endif %}
   </li>
@@ -85,7 +86,7 @@
   {% else %}<div class="appendix-block"><p>No major foundation leaks found.</p></div>{% endif %}
   <div class="appendix-block">
     <h3>What we checked</h3>
-    {{ score_list(foundation_checks) }}
+    {{ score_list(foundation_checks, social_rows) }}
     {{ overall("Overall online foundation score", foundation_score) }}
   </div>
 

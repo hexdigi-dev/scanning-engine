@@ -19,6 +19,8 @@ class ScanRequest(BaseModel):
     # address (optional - many service-area businesses don't publish one)
     # and ZIP also help match the Google listing and feed the consistency check.
     street_address: str = ""
+    # Optional: their social handles or profile links, as typed on the form.
+    social_handles: str = ""
     city: str = ""
     state: str = ""
     zip_code: str = ""

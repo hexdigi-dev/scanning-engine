@@ -203,7 +203,8 @@ Tasks:
    Leak" is about how many MORE leads a complete online foundation could be bringing in (people
    who never found them or passed them over), not customers they lost - say so plainly, name the
    main gaps found, and tie it to our Foundation Fix (Google and social profile completion and
-   consistency, optionally including registration with AI search tools); where reviews or
+   consistency across Google, directories, review sites and social); if AI assistants don't
+   recommend them, mention our separate AI Search Registration add-on; where reviews or
    reputation are among the gaps, follow the REPUTATION RULE above and also mention our
    Reputation Builder. The "Website Performance Leak" is about the share of the leads the
    website is CURRENTLY bringing in that its problems could be costing - name the specific

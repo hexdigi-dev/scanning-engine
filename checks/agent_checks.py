@@ -95,12 +95,13 @@ async def _run_agent_check(
 
         score, summary = parsed
         details = {}
-        for key in extra_keys:
-            match = re.search(rf"{key}:\s*(yes|no|unknown)", full_text, re.IGNORECASE)
-            details[key.lower()] = match.group(1).lower() if match else "unknown"
-        # Keep the KEY: lines out of the client-facing summary.
-        for key in extra_keys:
-            summary = re.sub(rf"\s*{key}:\s*\w+", "", summary, flags=re.IGNORECASE).strip()
+        # extra_keys: "KEY" (answer yes/no/unknown) or ("KEY", "a|b|c", default).
+        for item in extra_keys:
+            key, allowed, default = (item, "yes|no|unknown", "unknown") if isinstance(item, str) else item
+            match = re.search(rf"(?m)^\s*{key}:\s*({allowed})\b", full_text, re.IGNORECASE)
+            details[key.lower()] = match.group(1).lower() if match else default
+            # Keep the KEY: lines out of the client-facing summary.
+            summary = re.sub(rf"(?m)^\s*{key}:\s*({allowed})\b", "", summary, flags=re.IGNORECASE).strip()
         return CheckResult(
             check_name=check_name, score=score, summary=summary, source_type="measured", details=details
         )
@@ -137,30 +138,81 @@ Score 0-10 for whether and where "{business_name}" appears:
     return await _run_agent_check("Local Search Ranking", system_prompt, user_prompt)
 
 
-async def check_social_presence(business_name: str, website_url: str) -> CheckResult:
+SOCIAL_PLATFORMS = ("FACEBOOK", "INSTAGRAM", "LINKEDIN", "TIKTOK", "YOUTUBE", "X", "NEXTDOOR")
+
+
+async def check_social_presence(
+    business_name: str,
+    website_url: str,
+    location: Optional[str] = None,
+    phone: Optional[str] = None,
+    site_links: Optional[list] = None,
+    stated_handles: str = "",
+) -> CheckResult:
+    where = f" in {location}" if location else ""
+    if site_links:
+        evidence = (
+            "Their own website links to these social profiles - treat each as belonging to this "
+            f"business: {', '.join(site_links)}. Check each one you can."
+        )
+    elif site_links is not None:
+        evidence = "Their website has no links to social profiles (that is itself worth noting)."
+    else:
+        evidence = "We couldn't read their website for social links."
+    if stated_handles.strip():
+        evidence += (
+            f" The business owner told us their profiles are: {stated_handles.strip()}. Treat these as "
+            "theirs and check each one. If their website doesn't link to any of them, say so: "
+            "customers can't find those profiles from the site."
+        )
     system_prompt = f"""You are evaluating a small business's social media presence.
+The business is "{business_name}"{where}, website {website_url}{', phone ' + phone if phone else ''}.
 
-Search the web for "{business_name}" social media profiles (Facebook, Instagram, LinkedIn,
-etc.), and cross-reference what you find against the business's website ({website_url})
-where possible, to check existence, recent activity, and consistency (matching name,
-contact info, and branding across platforms and the website).
+{evidence}
 
-Score 0-10:
-- 0: No social media profiles found for this business
-- 1-3: One or two profiles found but they appear inactive/abandoned (no recent posts) or
-  don't clearly match this specific business
-- 4-6: Active profile(s) found, but presence is inconsistent - missing on major platforms,
-  sporadic activity, or inconsistent branding/contact info versus the website
-- 7-8: Active presence on multiple major platforms with reasonably recent activity and
-  consistent branding/contact info
-- 9-10: Strong, active, consistent presence across multiple major platforms with recent
-  posts and information matching the website
+Also search for their profiles on Facebook, Instagram, LinkedIn, TikTok, YouTube and Nextdoor.
+Social handles often differ from the business name (a marine company might be "@absolutedocks"),
+so also search by their website domain, phone number, city, and the services they offer, not
+just the exact name. Count a profile as theirs when it matches their website, phone, address or
+city. Other businesses share names - ignore profiles that clearly belong to a different business.
+
+Instagram and Facebook often can't be read without logging in. A profile that clearly exists
+counts as found even if you can't see its posts. Don't judge posting activity.
+
+Before SCORE, add two lines per platform, exactly in this form:
+FACEBOOK: found | not_found
+FACEBOOK_FOLLOWERS: <number, e.g. 1200> | unknown
+INSTAGRAM: found | not_found
+INSTAGRAM_FOLLOWERS: <number> | unknown
+LINKEDIN: found | not_found
+LINKEDIN_FOLLOWERS: <number> | unknown
+TIKTOK: found | not_found
+TIKTOK_FOLLOWERS: <number> | unknown
+YOUTUBE: found | not_found
+YOUTUBE_FOLLOWERS: <number> | unknown
+X: found | not_found
+X_FOLLOWERS: <number> | unknown
+NEXTDOOR: found | not_found
+NEXTDOOR_FOLLOWERS: <number> | unknown
+Only give a follower (or page like) count you actually saw; otherwise write unknown.
+For SCORE, give any number 0-10 (it's recalculated from the lines above).
+In the SUMMARY, name the profiles you found (platform and handle) and say whether their website
+links to them. Don't mention a score or posting activity.
 {RESPONSE_FORMAT_INSTRUCTIONS}"""
     user_prompt = (
-        f"Search for '{business_name}' social media profiles and check them against "
-        f"the business website {website_url} for existence, activity, and consistency."
+        f"Find {business_name}'s social media profiles{where} (website {website_url}) and check "
+        "their existence, activity, and consistency with the website."
     )
-    return await _run_agent_check("Social Media Presence", system_prompt, user_prompt)
+    return await _run_agent_check(
+        "Social Media Presence",
+        system_prompt,
+        user_prompt,
+        extra_keys=tuple(
+            item
+            for key in SOCIAL_PLATFORMS
+            for item in ((key, "found|not_found", "not_found"), (f"{key}_FOLLOWERS", r"[\d][\d,.]*[ \t]*[kKmM]?|unknown", "unknown"))
+        ),
+    )
 
 
 async def check_reputation(business_name: str, location: str) -> CheckResult:

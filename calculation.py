@@ -305,7 +305,8 @@ def calculate_foundation_leak(
         issues.append(("Not recommended by AI assistants", FOUNDATION_LOSSES["not_in_ai"]))
     if consistency_score is not None and consistency_score < 7:
         issues.append(("Name, address, or phone inconsistent across directories", FOUNDATION_LOSSES["inconsistent_nap"]))
-    if social_score is not None and social_score < 4:
+    # Social score is rules-based (main.rate_social): 0 means no profiles found.
+    if social_score is not None and social_score < 1:
         issues.append(("No active social media presence", FOUNDATION_LOSSES["no_social"]))
 
     if not issues:

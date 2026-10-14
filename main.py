@@ -1,4 +1,5 @@
 import asyncio
+import re
 import secrets
 import time
 from contextlib import asynccontextmanager
@@ -157,6 +158,74 @@ def annotate_reviews(reviews: CheckResult, presence: dict, local_ranking: CheckR
     )
 
 
+SOCIAL_SITES = {
+    "facebook": "facebook.com", "instagram": "instagram.com", "linkedin": "linkedin.com",
+    "tiktok": "tiktok.com", "youtube": "youtube.com", "x": ("x.com", "twitter.com"), "nextdoor": "nextdoor.com",
+}
+# Social score, from what the scan can see (no posting activity until a
+# profile-data service is added at volume). Per profile: exists 1.5, linked
+# from their website +1, followers 100-999 +0.5 or 1,000+ +1. Sum, round
+# down, cap 10 - three strong profiles reach 10.
+SOCIAL_FOUND_POINTS = 1.5
+SOCIAL_LINKED_POINTS = 1.0
+
+
+def _followers(value) -> Optional[int]:
+    """'1,200' / '1.2K' / '3m' -> int; None when unknown."""
+    text = str(value or "").strip().lower().replace(",", "")
+    match = re.match(r"^([\d.]+)\s*([km]?)$", text)
+    if not match:
+        return None
+    try:
+        number = float(match.group(1))
+    except ValueError:
+        return None
+    return int(number * {"k": 1_000, "m": 1_000_000}.get(match.group(2), 1))
+
+
+def _follower_points(followers: Optional[int]) -> float:
+    if followers is None or followers < 100:
+        return 0.0
+    return 1.0 if followers >= 1000 else 0.5
+
+
+def rate_social(check: CheckResult, homepage_signals: Optional[dict]) -> CheckResult:
+    """Social Media Presence score from per-platform findings (AI search,
+    handles they entered, and links on their website), by fixed rules."""
+    details = dict(check.details or {})
+    site_links = (homepage_signals or {}).get("social_links") if homepage_signals else None
+    ran = check.source_type != "not_checked"
+    platforms, total = {}, 0.0
+    for platform, domains in SOCIAL_SITES.items():
+        domains = domains if isinstance(domains, tuple) else (domains,)
+        linked = any(d in link for link in (site_links or []) for d in domains)
+        # Older results used found_active/found_unknown/...; any "found..." counts.
+        found = linked or (ran and str(details.get(platform, "not_found")).startswith("found"))
+        followers = _followers(details.get(f"{platform}_followers")) if ran else None
+        points = 0.0
+        if found:
+            points = SOCIAL_FOUND_POINTS + (SOCIAL_LINKED_POINTS if linked else 0) + _follower_points(followers)
+        total += points
+        platforms[platform] = {"found": found, "linked": linked, "followers": followers, "points": points}
+
+    found_any = any(p["found"] for p in platforms.values())
+    if not ran and not found_any:
+        return check
+    summary = check.summary
+    if not ran:
+        names = ", ".join(name.title() for name, p in platforms.items() if p["found"])
+        summary = f"Your website links to your {names} profile(s); we couldn't check them further this time."
+    return check.model_copy(
+        update={
+            "score": min(10, int(total)),
+            "summary": summary,
+            "source_type": "measured",
+            "details": {**details, "platforms": platforms, "linked_from_site": None if site_links is None else any(
+                p["linked"] for p in platforms.values())},
+        }
+    )
+
+
 # Hold the client email when this many checks couldn't run.
 HOLD_IF_UNCHECKED = 3
 
@@ -298,7 +367,6 @@ async def scan(request: ScanRequest, http_request: Request) -> ScanResponse:
     (
         (website_checks, raw_website_data),
         (presence_checks, raw_presence_data),
-        social_check,
         homepage_signals,
     ) = await asyncio.gather(
         check_website_health(request.website_url),
@@ -310,7 +378,6 @@ async def scan(request: ScanRequest, http_request: Request) -> ScanResponse:
             request.street_address.strip() or None,
             request.zip_code.strip() or None,
         ),
-        check_social_presence(request.business_name, request.website_url),
         check_homepage_signals(request.website_url),
     )
 
@@ -364,6 +431,7 @@ async def scan(request: ScanRequest, http_request: Request) -> ScanResponse:
         nap_consistency_check,
         cta_assessment,
         ad_activity_check,
+        social_check,
     ) = await asyncio.gather(
         ai_visibility_coro
         or _skipped_check("AI Search Visibility", location_skip_summary),
@@ -389,6 +457,15 @@ async def scan(request: ScanRequest, http_request: Request) -> ScanResponse:
             (homepage_signals or {}).get("ad_tags"),
             raw_presence_data.get("gbp_category") or request.business_type,
         ),
+        # Runs after the website read so it can use the social links found there.
+        check_social_presence(
+            request.business_name,
+            request.website_url,
+            location,
+            request.phone,
+            (homepage_signals or {}).get("social_links") if homepage_signals else None,
+            request.social_handles,
+        ),
     )
 
     # A form drawn by JavaScript is invisible in the page code but visible in
@@ -406,6 +483,7 @@ async def scan(request: ScanRequest, http_request: Request) -> ScanResponse:
     )
 
     ad_activity_check = rate_paid_ads(ad_activity_check, homepage_signals)
+    social_check = rate_social(social_check, homepage_signals)
 
     presence_checks = [
         annotate_reviews(check, raw_presence_data, local_ranking_check) if check.check_name == "Google Reviews" else check
