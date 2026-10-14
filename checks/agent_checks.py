@@ -42,6 +42,27 @@ def _parse_score_summary(text: str):
     return score, summary
 
 
+# Claude API statuses worth retrying: rate limit, overload, server errors.
+RETRY_STATUSES = (429, 500, 502, 503, 529)
+MAX_ATTEMPTS = 3
+
+
+async def post_with_retry(client: httpx.AsyncClient, url: str, label: str, **kwargs) -> httpx.Response:
+    """POST with up to MAX_ATTEMPTS tries on rate limits/overloads, waiting
+    for the server's retry-after (capped at 20s) or 5s, 10s."""
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        response = await client.post(url, **kwargs)
+        if response.status_code not in RETRY_STATUSES or attempt == MAX_ATTEMPTS:
+            return response
+        try:
+            wait = min(20.0, float(response.headers.get("retry-after", 0)) or 5.0 * attempt)
+        except ValueError:
+            wait = 5.0 * attempt
+        print(f"[agent] {label}: HTTP {response.status_code}, retrying in {wait:.0f}s (attempt {attempt + 1})")
+        await asyncio.sleep(wait)
+    return response
+
+
 async def _run_agent_check(
     check_name: str, system_prompt: str, user_prompt: str, extra_keys: tuple = ()
 ) -> CheckResult:
@@ -51,8 +72,10 @@ async def _run_agent_check(
     summary instead."""
     try:
         async with httpx.AsyncClient(timeout=AGENT_CALL_TIMEOUT) as client:
-            response = await client.post(
+            response = await post_with_retry(
+                client,
                 ANTHROPIC_URL,
+                check_name,
                 headers={
                     "x-api-key": ANTHROPIC_API_KEY,
                     "anthropic-version": "2023-06-01",
@@ -86,11 +109,12 @@ async def _run_agent_check(
         parsed = _parse_score_summary(full_text)
         if parsed is None:
             excerpt = full_text[:200] or "(empty response)"
+            print(f"[agent] {check_name}: couldn't parse a score. Excerpt: {' '.join(excerpt.split())}")
             return CheckResult(
                 check_name=check_name,
                 score=0,
-                summary=f"Could not parse a score from the AI's response. Raw excerpt: {excerpt}",
-                source_type="measured",
+                summary="We couldn't complete this check this time.",
+                source_type="not_checked",
             )
 
         score, summary = parsed

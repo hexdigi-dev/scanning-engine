@@ -10,6 +10,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import httpx
 
+from checks.agent_checks import post_with_retry
+
 from config import ANTHROPIC_API_KEY
 from models import CheckResult, LeakEstimate, SupportingLeak
 
@@ -238,6 +240,18 @@ def _extract_json(text: str) -> dict:
     raise ValueError("No JSON object found in response")
 
 
+def _as_obj(value, kind):
+    """Newer models sometimes return a nested field as a JSON string instead
+    of an object/list. Decode it when possible; otherwise return an empty
+    value of the expected kind so a bad field never sinks the whole report."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (ValueError, TypeError):
+            return kind()
+    return value if isinstance(value, kind) else kind()
+
+
 def _parse_response(data: dict) -> dict:
     """Prefers the submit_report tool call, whose input the API has already
     parsed into valid JSON. Falls back to reading JSON out of plain text in
@@ -245,7 +259,8 @@ def _parse_response(data: dict) -> dict:
     for block in data.get("content", []):
         if block.get("type") == "tool_use" and block.get("name") == SUBMIT_TOOL["name"]:
             tool_input = block.get("input")
-            if isinstance(tool_input, dict):
+            tool_input = _as_obj(tool_input, dict)
+            if tool_input:
                 return tool_input
     full_text = "\n".join(
         block.get("text", "") for block in data.get("content", []) if block.get("type") == "text"
@@ -327,8 +342,10 @@ async def synthesize_report(
     falls back to the original unpolished content instead."""
     try:
         async with httpx.AsyncClient(timeout=SYNTHESIS_TIMEOUT) as client:
-            response = await client.post(
+            response = await post_with_retry(
+                client,
                 ANTHROPIC_URL,
+                "synthesis",
                 headers={
                     "x-api-key": ANTHROPIC_API_KEY,
                     "anthropic-version": "2023-06-01",
@@ -361,7 +378,9 @@ async def synthesize_report(
         parsed = _parse_response(data)
 
         polished_by_name = {
-            item["check_name"]: item["summary"] for item in parsed.get("checks", []) if "check_name" in item
+            item["check_name"]: item["summary"]
+            for item in _as_obj(parsed.get("checks"), list)
+            if isinstance(item, dict) and isinstance(item.get("check_name"), str) and isinstance(item.get("summary"), str)
         }
         # Preserve the original list's order, count, score, and source_type
         # exactly - only the summary text is replaced, and only for checks
@@ -372,14 +391,14 @@ async def synthesize_report(
             for check in all_check_results
         ]
 
-        leak_text = parsed.get("leak_text") or {}
+        leak_text = _as_obj(parsed.get("leak_text"), dict)
         headline_explanation = leak_text.get("headline_explanation") or leak_estimate.headline_explanation
         dormant_lead_explanation = (
             leak_text.get("dormant_lead_explanation") or leak_estimate.dormant_lead_explanation
         )
         polished_leaks_by_label = {
             item["label"]: item["explanation"]
-            for item in leak_text.get("supporting_leaks", [])
+            for item in _as_obj(leak_text.get("supporting_leaks"), list)
             if isinstance(item, dict) and item.get("label") and item.get("explanation")
         }
         # Same rule as the checks: keep every original leak and its dollar
@@ -388,7 +407,7 @@ async def synthesize_report(
             leak.model_copy(update={"explanation": polished_leaks_by_label.get(leak.label, leak.explanation)})
             for leak in leak_estimate.supporting_leaks
         ]
-        review_note = parsed.get("review_note")
+        review_note = parsed.get("review_note") if isinstance(parsed.get("review_note"), str) else None
         if leak_estimate.flagged_for_review and not review_note:
             # Safety net: don't let a missed instruction silently drop this.
             review_note = (
