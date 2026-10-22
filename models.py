@@ -1,3 +1,4 @@
+import re
 from datetime import datetime
 from typing import List, Literal, Optional
 
@@ -44,6 +45,51 @@ class ScanRequest(BaseModel):
     def validate_website_url(cls, v: str) -> str:
         _url_adapter.validate_python(v)
         return v
+
+
+# Google categories too broad to search with: a mortgage broker filed as
+# "Banking and Finance" gets compared against bank drive-thrus. For these,
+# the business's own description from the form is used instead.
+BROAD_GOOGLE_CATEGORIES = {
+    "finance", "banking and finance", "financial institution", "financial service",
+    "establishment", "point of interest", "service", "services", "store", "business",
+    "corporate office", "professional services", "consultant", "service establishment",
+    "uncategorized", "general store", "local business",
+}
+
+
+def short_business_type(business_type: Optional[str]) -> Optional[str]:
+    """First part of what the business wrote it does, lowercased and short
+    enough to search with: "Mortgage broker, refinancing" -> "mortgage broker"."""
+    first = re.split(r"[,;/|&(]", (business_type or "").strip())[0].strip().lower()
+    return first[:60] if len(first) >= 3 else None
+
+
+def pick_search_category(gbp_category: Optional[str], business_type: Optional[str]) -> str:
+    """The category used for the map search and the AI questions: Google's,
+    unless it's too broad (or missing) and the form says something usable."""
+    google = (gbp_category or "").strip()
+    form = short_business_type(business_type)
+    if google and google.lower() not in BROAD_GOOGLE_CATEGORIES:
+        return google
+    return form or google or "business"
+
+
+def describe_jobs(jobs: float, short: bool = False) -> str:
+    """Plain wording for an estimated number of jobs a month:
+    2 -> 'about 2 jobs a month', 0.5 -> 'about 1 job every 2 months',
+    1.5 -> 'about 3 jobs every 2 months', 1/3 -> 'about 1 job every 3 months'.
+    short=True uses '/mo' for the report cards."""
+    if not jobs or jobs <= 0:
+        return ""
+    per_month = "/mo" if short else " a month"
+    if float(jobs).is_integer():
+        count = int(jobs)
+        return f"about {count} job{'s' if count != 1 else ''}{per_month}"
+    if jobs < 0.5:
+        return f"about 1 job every {round(1 / jobs)} months"
+    count = int(round(jobs * 2))
+    return f"about {count} job{'s' if count != 1 else ''} every 2 months"
 
 
 def form_location(request: "ScanRequest") -> Optional[str]:

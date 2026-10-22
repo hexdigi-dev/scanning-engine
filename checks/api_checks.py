@@ -516,7 +516,7 @@ async def check_map_pack(
             source_type="not_checked",
         )
 
-    category = presence.get("gbp_category") or fallback_category or "business"
+    category = presence.get("search_category") or presence.get("gbp_category") or fallback_category or "business"
     query = f"{category} in {city}"
 
     if gbp_found is False:

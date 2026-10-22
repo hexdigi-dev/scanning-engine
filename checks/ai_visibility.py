@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import httpx
 from dotenv import load_dotenv
 
-from models import CheckResult
+from models import CheckResult, short_business_type
 
 load_dotenv()
 
@@ -34,9 +34,6 @@ GEMINI_MODELS = ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-flash-latest"]
 # Web search makes each answer slower than a plain chat reply.
 AI_CALL_TIMEOUT = 90.0
 
-# Linear 0-10 scale across 0-4 mentions, using standard rounding (0, 2.5, 5,
-# 7.5, 10 -> 0, 3, 5, 8, 10) rather than Python's banker's-rounding round().
-SCORE_BY_MENTION_COUNT = {0: 0, 1: 3, 2: 5, 3: 8, 4: 10}
 
 
 @dataclass
@@ -80,14 +77,17 @@ async def _post_with_model_fallback(provider: str, models: list, send) -> Provid
 
 def _responses_api_text(data: dict) -> str:
     """Final answer text from an OpenAI/xAI Responses API reply."""
-    if isinstance(data.get("output_text"), str):
-        return data["output_text"]
-    parts = []
+    parts = [data["output_text"]] if isinstance(data.get("output_text"), str) else []
     for item in data.get("output", []) or []:
         if item.get("type") == "message":
             for content in item.get("content", []) or []:
                 if content.get("type") in ("output_text", "text"):
-                    parts.append(content.get("text", ""))
+                    if not isinstance(data.get("output_text"), str):
+                        parts.append(content.get("text", ""))
+                    # Cited sources (URL + title) count too: an answer that
+                    # links to their website is a recommendation.
+                    for note in content.get("annotations", []) or []:
+                        parts.append(f"{note.get('title') or ''} {note.get('url') or ''}")
     return "\n".join(parts)
 
 
@@ -117,7 +117,13 @@ async def _call_claude(prompt: str, place: dict) -> ProviderResult:
         result = await _post_with_model_fallback("Claude", CLAUDE_MODELS, send)
         if result.success:
             data = json.loads(result.text)
-            result.text = "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
+            texts = []
+            for block in data.get("content", []) or []:
+                if block.get("type") == "text":
+                    texts.append(block.get("text", ""))
+                    for cite in block.get("citations", []) or []:
+                        texts.append(f" [{cite.get('title') or ''} {cite.get('url') or ''}] ")
+            result.text = "".join(texts)
         return result
     except Exception as exc:
         return ProviderResult("Claude", False, "", f"{type(exc).__name__}: {exc}")
@@ -196,9 +202,9 @@ async def _call_gemini(prompt: str, place: dict) -> ProviderResult:
             # Business names from the Maps/web sources it grounded on count too.
             for chunk in candidate.get("groundingMetadata", {}).get("groundingChunks", []) or []:
                 for kind in ("maps", "web"):
-                    title = (chunk.get(kind) or {}).get("title")
-                    if title:
-                        texts.append(title)
+                    source = chunk.get(kind) or {}
+                    if source.get("title") or source.get("uri"):
+                        texts.append(f"{source.get('title') or ''} {source.get('uri') or ''}")
             result.text = "\n".join(texts)
         return result
     except Exception as exc:
@@ -234,70 +240,182 @@ def _plain_failure_reason(error: Optional[str]) -> str:
     return "returned an error"
 
 
-def _business_mentioned(text: str, business_name: str) -> bool:
+# Words that are part of a legal or trading name but not how people (or AI
+# assistants) actually refer to a business: "Xavier Financial & Mortgage
+# Group, LLC" is usually written "Xavier Financial".
+NAME_SUFFIX_WORDS = {
+    "llc", "inc", "incorporated", "co", "company", "corp", "corporation", "ltd",
+    "pllc", "pc", "lp", "llp", "group", "the",
+}
+PHONE_PATTERN = re.compile(r"\(?\b\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}\b")
+
+
+def _name_words(text: str) -> list:
+    text = (text or "").lower().replace("&", " and ").replace("'", "").replace("\u2019", "")
+    return re.sub(r"[^a-z0-9]+", " ", text).split()
+
+
+def _core_name_words(business_name: str) -> list:
+    words = _name_words(business_name)
+    while words and words[-1] in NAME_SUFFIX_WORDS | {"and"}:
+        words.pop()
+    while words and words[0] in NAME_SUFFIX_WORDS:
+        words.pop(0)
+    return words
+
+
+def _website_host(website_url: Optional[str]) -> Optional[str]:
+    host = re.sub(r"^[a-z]+://", "", (website_url or "").strip().lower()).split("/")[0].split(":")[0]
+    host = host[4:] if host.startswith("www.") else host
+    return host if "." in host else None
+
+
+def _business_mentioned(
+    text: str, business_name: str, website_url: Optional[str] = None, phone: Optional[str] = None
+) -> bool:
+    """True when an AI answer names the business: its name (with or without
+    LLC / Inc / Group etc., or just the first two words of a longer name),
+    its website, or its phone number."""
     if not text:
         return False
     if business_name.lower().strip() in text.lower():
         return True
-    # Fuzzy fallback: compare business_name against capitalized-phrase
-    # candidates in the response (how listed business names typically read),
-    # to catch near-matches like missing punctuation or a shortened name.
+
+    padded_text = " " + " ".join(_name_words(text)) + " "
+    core = _core_name_words(business_name)
+    if core and (" " + " ".join(core) + " ") in padded_text:
+        return True
+    # "Xavier Financial and Mortgage" -> "Xavier Financial". Only for names
+    # of 3+ words, and only when the shortened name still has some length,
+    # so a two-letter or one-word fragment can't match by accident.
+    if len(core) >= 3:
+        short = core[:2]
+        if short[-1] != "and" and len("".join(short)) >= 8 and (" " + " ".join(short) + " ") in padded_text:
+            return True
+
+    host = _website_host(website_url)
+    if host and host in text.lower():
+        return True
+
+    phone_digits = re.sub(r"\D", "", phone or "")[-10:]
+    if len(phone_digits) == 10:
+        for found in PHONE_PATTERN.findall(text):
+            if re.sub(r"\D", "", found)[-10:] == phone_digits:
+                return True
+
+    # Fuzzy fallback: compare against capitalized-phrase candidates in the
+    # response (how listed business names typically read), to catch
+    # near-matches like missing punctuation.
+    targets = [business_name.lower()] + ([" ".join(core)] if core else [])
     candidates = re.findall(r"[A-Z][A-Za-z&'.,-]*(?:\s+[A-Z][A-Za-z&'.,-]*){0,5}", text)
     for candidate in candidates:
-        ratio = difflib.SequenceMatcher(None, candidate.lower(), business_name.lower()).ratio()
-        if ratio >= 0.8:
-            return True
+        for target in targets:
+            if difflib.SequenceMatcher(None, candidate.lower(), target).ratio() >= 0.8:
+                return True
     return False
 
 
-async def check_ai_visibility(business_name: str, category: str, location: str) -> CheckResult:
+def _visibility_prompts(category: str, location: str, service: Optional[str]) -> list:
+    """Three differently worded questions a real customer might ask. One
+    question can't prove a business is never recommended - answers vary with
+    wording, so we ask a few and report how often they come up."""
+    category = category.lower()
+    city = (location or "").split(",")[0].strip() or location
+    prompts = [
+        f"I need a {category} in {location}. Who are the best ones to call? "
+        "Give me a few specific local business names.",
+        f"Can you recommend a trustworthy, well-reviewed {category} near {city}? "
+        "I'd like the names of a few local businesses I could contact.",
+    ]
+    service = short_business_type(service)
+    if service and service != category:
+        prompts.append(f"Who do people in {location} use for {service}? Name a few specific local businesses.")
+    else:
+        prompts.append(f"Which {category} in {location} has the best reputation? Name a few local options.")
+    return prompts
+
+
+def _and_list(items: list) -> str:
+    return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
+
+
+PROVIDER_CALLS = (("Claude", _call_claude), ("ChatGPT", _call_openai), ("Grok", _call_xai), ("Gemini", _call_gemini))
+
+
+async def check_ai_visibility(
+    business_name: str,
+    category: str,
+    location: str,
+    website_url: Optional[str] = None,
+    phone: Optional[str] = None,
+    service: Optional[str] = None,
+) -> CheckResult:
     """Asks Claude, ChatGPT, Grok, and Gemini - each with live web search on,
-    the way their consumer apps answer local questions - what a new customer
-    would ask, and checks whether business_name appears in each answer.
-    category should be the Google category ("Plumber") when known. Each
-    provider handles its own failures. Never raises."""
+    the way their consumer apps answer local questions - three differently
+    worded questions a new customer would ask, and counts how many answers
+    name the business (by name, website or phone). category should be a
+    specific search category ("Plumber", "Mortgage broker"); service is what
+    the business wrote it does on the form. Each provider handles its own
+    failures. Never raises."""
     city, _, state = (location or "").partition(",")
     place = {"city": city.strip() or None, "state": state.strip() or None}
-    prompt = (
-        f"I need a {category.lower()} in {location}. Who are the best ones to call? "
-        "Give me a few specific local business names."
-    )
+    prompts = _visibility_prompts(category, location, service)
 
-    results = await asyncio.gather(
-        _call_with_retry(_call_claude, prompt, place),
-        _call_with_retry(_call_openai, prompt, place),
-        _call_with_retry(_call_xai, prompt, place),
-        _call_with_retry(_call_gemini, prompt, place),
-    )
-    print(
-        "[ai_visibility] "
-        + "; ".join(
-            f"{r.provider}: {r.model or 'FAILED'}"
-            + (f" -> {'mentioned' if _business_mentioned(r.text, business_name) else 'not mentioned'}" if r.success else "")
-            for r in results
-        )
-    )
+    jobs = [(provider, prompt, call) for prompt in prompts for provider, call in PROVIDER_CALLS]
+    results = await asyncio.gather(*(_call_with_retry(call, prompt, place) for _, prompt, call in jobs))
 
-    mentioned, not_mentioned, failed = [], [], []
-    for result in results:
+    per_provider = {provider: {"asked": 0, "mentioned": 0, "errors": []} for provider, _ in PROVIDER_CALLS}
+    for (provider, prompt, _), result in zip(jobs, results):
+        tally = per_provider[provider]
         if not result.success:
-            print(f"[ai_visibility] {result.provider} check failed: {result.error}")
-            failed.append(f"{result.provider} ({_plain_failure_reason(result.error)})")
-        elif _business_mentioned(result.text, business_name):
-            mentioned.append(result.provider)
-        else:
-            not_mentioned.append(result.provider)
+            print(f"[ai_visibility] {provider} check failed: {result.error}")
+            tally["errors"].append(result.error)
+            continue
+        tally["asked"] += 1
+        hit = _business_mentioned(result.text, business_name, website_url, phone)
+        tally["mentioned"] += int(hit)
+        print(f"[ai_visibility] {provider} ({result.model}) -> {'mentioned' if hit else 'not mentioned'}: {prompt!r}")
 
-    score = SCORE_BY_MENTION_COUNT[len(mentioned)]
+    answered = sum(t["asked"] for t in per_provider.values())
+    mentions = sum(t["mentioned"] for t in per_provider.values())
+    failed = [
+        f"{provider} ({_plain_failure_reason(t['errors'][0])})"
+        for provider, t in per_provider.items()
+        if t["asked"] == 0
+    ]
 
-    checked = len(mentioned) + len(not_mentioned)
-    if failed:
-        summary = f"Mentioned by {len(mentioned)} of the {checked} AI assistants we could check"
+    if answered == 0:
+        return CheckResult(
+            check_name="AI Search Visibility",
+            score=0,
+            summary="Not checked - none of the AI assistants answered this time.",
+            source_type="not_checked",
+        )
+
+    # Share of answers that named them, 0-10, standard rounding.
+    score = int(10 * mentions / answered + 0.5)
+    providers_checked = [p for p, t in per_provider.items() if t["asked"]]
+    example = prompts[0].split(" Who are")[0].rstrip(".")
+    if mentions:
+        found_by = ", ".join(
+            f"{p} {t['mentioned']} of {t['asked']}" for p, t in per_provider.items() if t["mentioned"]
+        )
+        summary = (
+            f"Came up in {mentions} of the {answered} test questions we asked AI assistants ({found_by})."
+        )
+        missed = [p for p, t in per_provider.items() if t["asked"] and not t["mentioned"]]
+        if missed:
+            summary += f" Didn't come up in answers from {_and_list(missed)}."
     else:
-        summary = f"Mentioned by {len(mentioned)} of 4 AI assistants"
-    summary += f" ({', '.join(mentioned)})." if mentioned else "."
-    if not_mentioned:
-        summary += f" Not mentioned by: {', '.join(not_mentioned)}."
+        summary = (
+            f"Didn't come up in any of the {answered} test questions we asked "
+            f"{_and_list(providers_checked)}."
+        )
+    summary += (
+        f' We asked questions like "{example}". AI answers vary with the person, their location '
+        "and how they word the question, so customers may still find you this way - "
+        "this shows how consistently you come up."
+    )
     if failed:
         summary += f" Could not check: {', '.join(failed)}."
 
@@ -317,7 +435,7 @@ if __name__ == "__main__":
         location = "Fort Myers, FL"
 
         print(f"Checking AI search visibility for '{business_name}' ({category}, {location})...")
-        result = await check_ai_visibility(business_name, category, location)
+        result = await check_ai_visibility(business_name, category, location, None, None, category)
         print(f"\n{result.check_name}: {result.score}/10 [{result.source_type}]")
         print(result.summary)
 

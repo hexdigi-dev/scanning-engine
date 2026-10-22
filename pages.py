@@ -10,7 +10,7 @@ from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
 
 import config
-from models import ScanResponse
+from models import ScanResponse, describe_jobs
 
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
@@ -23,18 +23,10 @@ def _money(value: float) -> str:
 
 
 def _jobs(jobs: float, capped: bool = False) -> str:
-    """Whole jobs read per month; half jobs read per two months:
-    1 -> 'about 1 job/mo', 3 -> 'about 3 jobs/mo',
-    0.5 -> 'about 1 job every 2 months', 1.5 -> 'about 3 jobs every 2 months'."""
-    if jobs <= 0:
-        return ""
+    """'about 1 job/mo', 'about 1 job every 2 months', 'about 1 job every 3 months', '4+ jobs/mo'."""
     if capped and jobs >= 4:
         return "4+ jobs/mo"
-    if float(jobs).is_integer():
-        count = int(jobs)
-        return f"about {count} job{'s' if count != 1 else ''}/mo"
-    count = int(jobs * 2)
-    return f"about {count} job{'s' if count != 1 else ''} every 2 months"
+    return describe_jobs(jobs, short=True)
 
 
 templates.env.filters["money"] = _money

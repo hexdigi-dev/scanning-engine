@@ -27,7 +27,7 @@ from checks.ai_visibility import check_ai_visibility
 from checks.api_checks import check_google_presence, check_map_pack, check_website_health
 from checks.website_conversion import assess_calls_to_action, check_homepage_signals
 from calculation import calculate_leak_estimate
-from models import CheckResult, ScanRequest, ScanResponse, form_full_address, form_location
+from models import CheckResult, ScanRequest, ScanResponse, form_full_address, form_location, pick_search_category
 from synthesis import synthesize_report
 
 @asynccontextmanager
@@ -402,11 +402,22 @@ async def scan(request: ScanRequest, http_request: Request) -> ScanResponse:
         "Google Business Profile was found, so this check was skipped."
     )
 
+    # Google's category can be too broad to search with ("Banking and
+    # Finance" for a mortgage broker returns bank drive-thrus); then the
+    # business's own description from the form is used instead, for both the
+    # map search and the AI questions.
+    search_category = pick_search_category(raw_presence_data.get("gbp_category"), request.business_type)
+    raw_presence_data["search_category"] = search_category
+    print(f"[google] search category: {search_category!r} (Google: {raw_presence_data.get('gbp_category')!r}, form: {request.business_type!r})")
+
     ai_visibility_coro = (
         check_ai_visibility(
             request.business_name,
-            raw_presence_data.get("gbp_category") or request.business_type,
+            search_category,
             location,
+            request.website_url,
+            phone,
+            request.business_type,
         )
         if location
         else None
@@ -455,7 +466,7 @@ async def scan(request: ScanRequest, http_request: Request) -> ScanResponse:
             request.website_url,
             location,
             (homepage_signals or {}).get("ad_tags"),
-            raw_presence_data.get("gbp_category") or request.business_type,
+            search_category,
         ),
         # Runs after the website read so it can use the social links found there.
         check_social_presence(

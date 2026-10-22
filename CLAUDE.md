@@ -68,11 +68,17 @@ inside Google Tag Manager), competitor ads.
 Rules that must hold:
 - Google profile lookup searches exactly "[Business Name] [City]" via Places API (New) with
   service-area businesses included; confirm by website, phone or address.
-- Map ranking searches "[Google category] in [City]": top 3 = 10, 4–10 = 5 ("there but weak"),
+- Search category = Google's category, unless it's too broad (`models.BROAD_GOOGLE_CATEGORIES`, e.g.
+  "Banking and Finance" for a mortgage broker) — then the form's business type (first part) is used.
+  Used for the map search, the AI questions and the ad check.
+- Map ranking searches "[search category] in [City]": top 3 = 10, 4–10 = 5 ("there but weak"),
   11–20 = 1 ("hard to find"), not in top 20 = 0 ("virtually invisible"). Report shows both
   searches and names the top 3 competitors.
 - AI visibility asks Claude, ChatGPT, Grok and Gemini, each with live web search, newest models
-  first with fallbacks.
+  first with fallbacks — 3 differently worded questions each (12 answers). Score = share of answers
+  that name them (0–10). A mention = name with or without LLC/Inc/Group, the first two words of a
+  3+ word name, their website domain, or their phone number. Wording is a test result ("came up
+  in X of 12"), never "AI doesn't recommend you" — answers vary by person and phrasing.
 - A check that couldn't run is "Not checked": excluded from scores and leak totals, never shown
   as 0/10, never shows raw errors to the client.
 - Google's API returns "most relevant" reviews, not newest — don't infer review recency from it.
@@ -85,7 +91,11 @@ Rules that must hold:
 ## Estimates (underpromise: when in doubt, estimate lower)
 
 - All leaks are in jobs at the client's average job value, rounded down to half jobs (up if
-  within 0.1), shown as "up to". Any detected leak counts as at least half a job.
+  within 0.1), shown as "up to". Below half a job: one job every 3, 4, 6 or 12 months; under one
+  job a year = no leak (the old half-job minimum inflated small businesses).
+- Caps: the leak total, and separately the other-opportunities total, never exceed what the
+  business brings in a month (leads × close rate × job value, from the form); groups are scaled
+  down and re-rounded when they would.
 - Foundation and Website leaks = the leak total in the hero. Slow lead response, after-hours
   coverage and dormant leads = "other potential opportunities" (second figure, not in the total).
 - After-hours: 15% of leads assumed to arrive after hours (sources range ~10–30%), only the extra

@@ -2,7 +2,7 @@ import math
 import re
 from typing import Optional
 
-from models import LeakEstimate, ScanRequest, SupportingLeak
+from models import LeakEstimate, ScanRequest, SupportingLeak, describe_jobs
 
 # Midpoints for open-ended self-reported ranges. Ranges use the reported
 # range's midpoint; open-ended ends ("Under 10", "100+", "50%+") use a
@@ -158,6 +158,18 @@ def _parse_currency(value: str) -> float:
 
 
 JOB_ROUNDING_TOLERANCE = 0.10
+# Below half a job a month, estimates step down to one job every 3, 4, 6 or
+# 12 months instead of being bumped up to half a job - for a small business
+# (a few leads a month at a high job value) the old half-job floor made every
+# leak $X,XXX and the totals bigger than the business itself. Anything under
+# one job a year isn't shown as a leak.
+SMALL_JOB_STEPS = (1 / 3, 1 / 4, 1 / 6, 1 / 12)
+# No single figure, and neither of the two totals (leaks; other
+# opportunities), is estimated above what the business currently brings in
+# each month (leads x close rate x average job value), from their own form
+# answers. Underpromise: a free scan claiming more than their whole revenue
+# reads as hype.
+TOTAL_CAP_SHARE_OF_REVENUE = 1.0
 
 
 def _whole_jobs(raw_jobs: float) -> float:
@@ -165,18 +177,32 @@ def _whole_jobs(raw_jobs: float) -> float:
     value, rounded DOWN to the nearest half job (0.5 = one job every two
     months), so figures read as floors the owner can sanity check rather
     than falsely precise dollars. A value within JOB_ROUNDING_TOLERANCE of
-    the next half job rounds up to it (0.98 -> 1, 1.43 -> 1.5). Any detected
-    leak below half a job still counts as half a job."""
+    the next half job rounds up to it (0.98 -> 1, 1.43 -> 1.5). Below that,
+    it rounds down to one job every 3, 4, 6 or 12 months; under one job a
+    year counts as no leak."""
     if raw_jobs <= 0:
         return 0.0
     halves = math.floor((raw_jobs + JOB_ROUNDING_TOLERANCE) * 2) / 2
-    return max(halves, 0.5)
+    if halves >= 0.5:
+        return halves
+    for step in SMALL_JOB_STEPS:
+        if raw_jobs >= step:
+            return step
+    return 0.0
 
 
 def _jobs_text(jobs: float) -> str:
-    if jobs == 0.5:
-        return "about one job every two months"
-    return f"about {jobs:g} job{'s' if jobs != 1 else ''} a month"
+    return describe_jobs(jobs)
+
+
+def _cap_jobs(jobs_list: list, cap_jobs: float) -> list:
+    """Scales a group of job estimates down so their sum stays within
+    cap_jobs, re-rounding each one down. Unchanged when already within."""
+    total = sum(jobs_list)
+    if total <= cap_jobs or total <= 0:
+        return jobs_list
+    factor = cap_jobs / total
+    return [_whole_jobs(jobs * factor) if jobs else 0.0 for jobs in jobs_list]
 
 
 def calculate_visibility_gap(
@@ -302,7 +328,7 @@ def calculate_foundation_leak(
     if reputation_score is not None and reputation_score < 6:
         issues.append(("Weak reputation on review sites outside Google", FOUNDATION_LOSSES["weak_off_google"]))
     if ai_visibility_score is not None and ai_visibility_score < 5:
-        issues.append(("Not recommended by AI assistants", FOUNDATION_LOSSES["not_in_ai"]))
+        issues.append(("Not coming up consistently in AI assistant answers", FOUNDATION_LOSSES["not_in_ai"]))
     if consistency_score is not None and consistency_score < 7:
         issues.append(("Name, address, or phone inconsistent across directories", FOUNDATION_LOSSES["inconsistent_nap"]))
     # Social score is rules-based (main.rate_social): 0 means no profiles found.
@@ -520,7 +546,7 @@ def calculate_leak_estimate(
         f"response time ({scan_request.response_time}), we assume you lose about "
         f"{response_time_loss_share:.0%} of the business you'd win by responding in under 5 "
         f"minutes, on top of your ~{current_customers:.1f} current customers/mo - rounded down, "
-        f"about {headline_jobs:g} job(s) a month. Response-time "
+        f"{_jobs_text(headline_jobs)}. Response-time "
         "research shows slower follow-up "
         "typically loses customers to faster-responding competitors or lead fatigue, though we "
         "can't confirm that's specifically what happened with your leads. This is exactly the kind "
@@ -541,8 +567,8 @@ def calculate_leak_estimate(
         "ESTIMATE, not measured data - assumes about 8% of your self-reported dormant leads "
         f"({scan_request.dormant_leads} → ~{dormant_leads_numeric:g}) can be revived into jobs each "
         "month, rounded down to whole jobs at your self-reported average job value "
-        f"({scan_request.avg_job_value} → ~${avg_job_value_numeric:,.2f}) - about "
-        f"{dormant_jobs:g} job(s) a month. Ongoing marketing keeps adding unconverted leads to this "
+        f"({scan_request.avg_job_value} → ~${avg_job_value_numeric:,.2f}) - "
+        f"{_jobs_text(dormant_jobs)}. Ongoing marketing keeps adding unconverted leads to this "
         "pool, so this is a monthly figure. This is exactly the upside our Lead Revival campaign is "
         "built to capture, by reaching back out to these dormant leads on your behalf."
     )
@@ -577,11 +603,52 @@ def calculate_leak_estimate(
     if website_leak is not None:
         supporting_leaks.append(website_leak)
 
-    # --- 4. Sanity check ---
+    after_hours = calculate_after_hours(
+        scan_request, review_data, homepage_signals, current_customers, avg_job_value_numeric
+    )
+
+    # --- 4. Cap each total at what they currently bring in a month ---
+    cap_jobs = current_customers * TOTAL_CAP_SHARE_OF_REVENUE
+    capped_leaks = _cap_jobs([leak.jobs_per_month for leak in supporting_leaks], cap_jobs)
+    totals_capped = False
+    kept_leaks = []
+    for leak, jobs in zip(supporting_leaks, capped_leaks):
+        if jobs != leak.jobs_per_month:
+            totals_capped = True
+            leak.jobs_per_month = jobs
+            leak.monthly_value = round(jobs * avg_job_value_numeric, 2)
+            leak.explanation += (
+                " Scaled down so the leak total doesn't exceed what you currently bring in each month "
+                f"(~{current_customers:.1f} jobs from your form answers)."
+            )
+        if jobs > 0:
+            kept_leaks.append(leak)
+    supporting_leaks = kept_leaks
+
+    old_headline_text, old_dormant_text = _jobs_text(headline_jobs), _jobs_text(dormant_jobs)
+    headline_jobs, after_hours_jobs, dormant_jobs = _cap_jobs(
+        [headline_jobs, after_hours["jobs"], dormant_jobs], cap_jobs
+    )
+    if old_headline_text and _jobs_text(headline_jobs) != old_headline_text:
+        headline_explanation = headline_explanation.replace(old_headline_text, _jobs_text(headline_jobs) or "less than one job a year")
+    if old_dormant_text and _jobs_text(dormant_jobs) != old_dormant_text:
+        dormant_lead_explanation = dormant_lead_explanation.replace(old_dormant_text, _jobs_text(dormant_jobs) or "less than one job a year")
+    if after_hours_jobs != after_hours["jobs"]:
+        totals_capped = True
+        after_hours["jobs"] = after_hours_jobs
+        after_hours["value"] = round(after_hours_jobs * avg_job_value_numeric, 2)
+    if round(headline_jobs * avg_job_value_numeric, 2) != headline_leak_monthly:
+        totals_capped = True
+        headline_leak_monthly = round(headline_jobs * avg_job_value_numeric, 2)
+    if round(dormant_jobs * avg_job_value_numeric, 2) != dormant_lead_value:
+        totals_capped = True
+        dormant_lead_value = round(dormant_jobs * avg_job_value_numeric, 2)
+    if totals_capped:
+        print(f"[estimate] totals capped at ~{current_customers:.2f} jobs/mo (their current monthly business)")
+
+    # --- 5. Sanity check ---
     # Flags both if the headline number alone looks implausible, and if the
-    # headline plus every supporting leak combined would - catching the case
-    # where each individual leak looks reasonable but the combination
-    # doesn't.
+    # headline plus every supporting leak combined would.
     implied_monthly_revenue = monthly_leads_numeric * avg_job_value_numeric * close_rate_numeric
     plausibility_ceiling = implied_monthly_revenue * PLAUSIBILITY_CEILING_MULTIPLIER
     combined_leak_total = round(
@@ -591,9 +658,6 @@ def calculate_leak_estimate(
         headline_leak_monthly > plausibility_ceiling or combined_leak_total > plausibility_ceiling
     )
 
-    after_hours = calculate_after_hours(
-        scan_request, review_data, homepage_signals, current_customers, avg_job_value_numeric
-    )
     after_hours_explanation = ""
     if after_hours["value"]:
         after_hours_explanation = (

@@ -13,7 +13,7 @@ import httpx
 from checks.agent_checks import post_with_retry
 
 from config import ANTHROPIC_API_KEY
-from models import CheckResult, LeakEstimate, SupportingLeak
+from models import CheckResult, LeakEstimate, SupportingLeak, describe_jobs
 
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_MODEL = "claude-sonnet-5-5"
@@ -217,8 +217,10 @@ Tasks:
    keeps adding unconverted leads to their pool of old leads.
    HOW TO STATE EVERY DOLLAR FIGURE: each one is what the issue COULD be costing them, in jobs
    and dollars at their own average job value, so present it as a maximum: "could be costing
-   you up to 3 jobs a month, or as much as $7,500". jobs_per_month is in half-job steps: 0.5
-   means "about one job every two months" and 1.5 means "about three jobs every two months".
+   you up to 3 jobs a month, or as much as $7,500". jobs_per_month is in half-job steps, or
+   smaller for small businesses: 0.5 means "about one job every two months", 1.5 means "about
+   three jobs every two months", 0.33 means "about one job every three months", 0.25 every four
+   months, 0.17 every six months, 0.08 every twelve months.
    Use the dollar figures exactly as given; never say "at least" or "conservatively", and
    never show cents.
    Each of these pieces is shown in its own separate card, so none of them should repeat
@@ -296,11 +298,7 @@ def _fallback_result(
 
 
 def _jobs_phrase(jobs: float) -> str:
-    if jobs == 0.5:
-        return "about one job every two months"
-    if jobs == int(jobs):
-        return f"about {int(jobs)} job{'s' if jobs != 1 else ''} a month"
-    return f"about {jobs:g} jobs a month"
+    return describe_jobs(jobs)
 
 
 def _plain_headline(estimate: LeakEstimate) -> str:
@@ -471,7 +469,7 @@ if __name__ == "__main__":
             CheckResult(
                 check_name="AI Search Visibility",
                 score=0,
-                summary="Mentioned by 0 of 4 AI assistants. Not mentioned by: Claude, ChatGPT, Grok, Gemini.",
+                summary="Didn't come up in any of the 12 test questions we asked Claude, ChatGPT, Grok, Gemini.",
                 source_type="measured",
             ),
             CheckResult(
