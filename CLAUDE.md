@@ -91,11 +91,8 @@ Rules that must hold:
 ## Estimates (underpromise: when in doubt, estimate lower)
 
 - All leaks are in jobs at the client's average job value, rounded down to half jobs (up if
-  within 0.1), shown as "up to". Below half a job: one job every 3, 4, 6 or 12 months; under one
-  job a year = no leak (the old half-job minimum inflated small businesses).
-- Caps: the leak total, and separately the other-opportunities total, never exceed what the
-  business brings in a month (leads × close rate × job value, from the form); groups are scaled
-  down and re-rounded when they would.
+  within 0.1), shown as "up to". Any detected leak counts as at least half a job. Vincent's call:
+  don't cut these further (no revenue caps, no sub-half-job steps).
 - Foundation and Website leaks = the leak total in the hero. Slow lead response, after-hours
   coverage and dormant leads = "other potential opportunities" (second figure, not in the total).
 - After-hours: 15% of leads assumed to arrive after hours (sources range ~10–30%), only the extra

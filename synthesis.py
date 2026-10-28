@@ -217,10 +217,8 @@ Tasks:
    keeps adding unconverted leads to their pool of old leads.
    HOW TO STATE EVERY DOLLAR FIGURE: each one is what the issue COULD be costing them, in jobs
    and dollars at their own average job value, so present it as a maximum: "could be costing
-   you up to 3 jobs a month, or as much as $7,500". jobs_per_month is in half-job steps, or
-   smaller for small businesses: 0.5 means "about one job every two months", 1.5 means "about
-   three jobs every two months", 0.33 means "about one job every three months", 0.25 every four
-   months, 0.17 every six months, 0.08 every twelve months.
+   you up to 3 jobs a month, or as much as $7,500". jobs_per_month is in half-job steps: 0.5
+   means "about one job every two months" and 1.5 means "about three jobs every two months".
    Use the dollar figures exactly as given; never say "at least" or "conservatively", and
    never show cents.
    Each of these pieces is shown in its own separate card, so none of them should repeat
